@@ -1,0 +1,136 @@
+[workspace]
+resolver = "3"
+members = [
+    "TrayAppDotNETCommon/tadn_common",
+    "TrayAppDotNETCommon/tadn_shell",
+    "TrayAppDotNETCommon/tadn_menu",
+    "VolumeTrayAppDotNET/vtadn_model",
+    "VolumeTrayAppDotNET/vtadn_sessions",
+    "VolumeTrayAppDotNET/vtadn_native",
+    "VolumeTrayAppDotNET/vtadn_audio",
+    "VolumeTrayAppDotNET/vtadn_flyout",
+    "VolumeTrayAppDotNET/vtadn_settings",
+    "VolumeTrayAppDotNET/app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.92"
+license = "GPL-3.0-only"
+publish = false
+
+[workspace.lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+unused_must_use = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+
+[workspace.dependencies]
+tadn_common = { path = "TrayAppDotNETCommon/tadn_common" }
+tadn_shell = { path = "TrayAppDotNETCommon/tadn_shell" }
+tadn_menu = { path = "TrayAppDotNETCommon/tadn_menu" }
+vtadn_model = { path = "VolumeTrayAppDotNET/vtadn_model" }
+vtadn_sessions = { path = "VolumeTrayAppDotNET/vtadn_sessions" }
+vtadn_native = { path = "VolumeTrayAppDotNET/vtadn_native" }
+vtadn_audio = { path = "VolumeTrayAppDotNET/vtadn_audio" }
+vtadn_flyout = { path = "VolumeTrayAppDotNET/vtadn_flyout" }
+vtadn_settings = { path = "VolumeTrayAppDotNET/vtadn_settings" }
+
+slint = { version = "1.18.1", default-features = false, features = [
+    "std",
+    "backend-winit",
+    "renderer-skia",
+    "renderer-software",
+    "accessibility",
+    "compat-1-2",
+    "raw-window-handle-06",
+    "unstable-winit-030",
+] }
+slint-build = "1.18.1"
+raw-window-handle = "0.6.2"
+log = { version = "0.4.35", features = ["std"] }
+roxmltree = "0.21"
+embed-resource = "3.0.12"
+windows-core = "0.62"
+windows = { version = "0.62.2", features = [
+    "std",
+    "Foundation",
+    "Foundation_Collections",
+    "Devices_Bluetooth",
+    "Devices_Enumeration",
+    "Devices_Radios",
+    "ApplicationModel",
+    "Management_Deployment",
+    "Storage",
+    "Storage_Streams",
+    "UI_ViewManagement",
+    "Win32_Devices_Bluetooth",
+    "Win32_Devices_DeviceAndDriverInstallation",
+    "Win32_Devices_Enumeration_Pnp",
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Devices_HumanInterfaceDevice",
+    "Win32_Devices_Properties",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Direct2D",
+    "Win32_Graphics_Direct2D_Common",
+    "Win32_Graphics_DirectWrite",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
+    "Win32_Media",
+    "Win32_Media_Audio",
+    "Win32_Media_Audio_Endpoints",
+    "Win32_Media_KernelStreaming",
+    "Win32_Media_Multimedia",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+    "Win32_Storage_Packaging_Appx",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Console",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_Etw",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Environment",
+    "Win32_System_IO",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Pipes",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Registry",
+    "Win32_System_RemoteDesktop",
+    "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WinRT",
+    "Win32_UI_Accessibility",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Input_Pointer",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+opt-level = 1
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

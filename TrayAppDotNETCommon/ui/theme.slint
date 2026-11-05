@@ -1,0 +1,64 @@
+// Shared TrayAppDotNET palette. Every property is pushed from Rust through
+// `tadn_common::apply_palette!` (one Slint compile root per crate means one `Theme`
+// global per crate, all with these exact property names). Defaults are the built-in
+// dark palette so previews look right before Rust sets anything.
+//
+// Colors here are Slint `#RRGGBBAA`; the C# `#AARRGGBB` defaults were converted.
+
+export global Theme {
+    in-out property <bool> is-light: false;
+
+    in-out property <color> background: #202020;
+    in-out property <color> foreground: #FFFFFF;
+    in-out property <color> border: #454545;
+    in-out property <color> separator: #3A3A3A;
+    in-out property <color> hover: #363636;
+    in-out property <color> hover-deep: #363636;
+    in-out property <color> pressed: #242424;
+    in-out property <color> pressed-deep: #181818;
+    in-out property <color> control-background: #3C3C3C;
+    in-out property <color> control-background-deep: #323232;
+    in-out property <color> control-border: #444444;
+    in-out property <color> disabled-foreground: #808080;
+    in-out property <color> accent: #DDDDDD;
+    in-out property <color> acrylic: #202020D0;
+    in-out property <color> secondary-foreground: #DDDDDD;
+    in-out property <color> footer-background: #1A1A1A;
+    in-out property <color> slider-track: #3A3A3A;
+    in-out property <color> slider-progress: #6A6A6A;
+    in-out property <color> slider-thumb: #F0F0F0;
+    in-out property <color> button-hover: #3A3A3A;
+    in-out property <color> button-pressed: #4A4A4A;
+    in-out property <color> icon-foreground: #DDDDDD;
+    in-out property <color> card-background: #2B2B2B;
+    in-out property <color> text-box-focused: #363636;
+    in-out property <color> search-list-item-selected: #454545;
+    in-out property <color> search-list-item-hover: #292929;
+    in-out property <color> toggle-switch-on-track: #5B5B5B;
+    in-out property <color> toggle-switch-on-thumb: #FFFFFF;
+    in-out property <color> close-button-hover: #C42B1C;
+    in-out property <color> close-button-pressed: #A42B1C;
+    in-out property <color> close-button-glyph-active: #FFFFFF;
+    in-out property <color> flyout-overlay-backdrop: #00000060;
+    in-out property <color> flyout-shadow: #00000099;
+    in-out property <color> menu-shadow: #00000080;
+    in-out property <color> text-selection: #00000066;
+    in-out property <color> tray-icon: #FFFFFF;
+
+    in-out property <bool> rounded-corners: true;
+    in-out property <bool> animations: true;
+    in-out property <duration> tooltip-delay: 750ms;
+
+    // Font families. `icon-font` is "Segoe Fluent Icons" when installed, else "Segoe MDL2 Assets".
+    in-out property <string> ui-font: "Segoe UI";
+    in-out property <string> icon-font: "Segoe Fluent Icons";
+    // ContextMenuFontSize (8..48, default 15): menus scale their text from this.
+    in-out property <length> menu-font-size: 15px;
+
+    // Shared metrics.
+    out property <length> body-font-size: 14px;
+    out property <length> caption-font-size: 12px;
+    out property <length> corner-radius: self.rounded-corners ? 8px : 0px;
+    out property <length> control-corner-radius: self.rounded-corners ? 4px : 0px;
+    out property <duration> hover-animation: self.animations ? 83ms : 0ms;
+}

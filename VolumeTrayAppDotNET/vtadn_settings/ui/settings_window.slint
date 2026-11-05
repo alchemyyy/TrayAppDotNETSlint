@@ -1,0 +1,1111 @@
+// VolumeTrayAppDotNET settings window (port of UI/Settings/* + Common SettingsWindowCommon,
+// SettingsWindowSearch, CommonBindings cards). Rust builds the page as a flat list of
+// `SettingsItem`s (headers, cards, rows); this file renders them and reports edits by row index.
+
+import { Theme } from "@tadn/theme.slint";
+import {
+    SectionHeaderText, SubsectionHeaderText, TitleText, DescriptionText, Tip, TooltipHost,
+    SettingsTooltip, SettingsFocus, FocusRing, SettingsButton, SettingsToggle, NumberBox, ComboOption,
+    SettingsComboBox, ColorSwatch, Card, NavItem, SearchBox, ScrollBar
+} from "@tadn/settings/controls.slint";
+import { ColorPickerWindow } from "@tadn/settings/color_picker.slint";
+
+export { Theme, ComboOption, ColorPickerWindow }
+
+export enum ItemKind {
+    page-header,
+    // Search results: a page heading that navigates to its page.
+    page-link,
+    subsection,
+    description,
+    pair-header,
+    toggle-card,
+    number-card,
+    combo-card,
+    pair-card,
+    color-card,
+    button-card,
+    text-card,
+    hotkey-card,
+    about-app,
+    about-row,
+}
+
+export struct HotkeyEntry {
+    text: string,
+    // Non-empty: registration problem (warning glyph + tooltip).
+    problem: string,
+    tooltip: string,
+}
+
+export struct SettingsItem {
+    kind: ItemKind,
+    title: string,
+    description: string,
+    enabled: bool,
+    highlighted: bool,
+    scroll-target: bool,
+    // Extra space below text-only rows (DescriptionText margins).
+    margin-bottom: length,
+    tooltip: string,
+    // Toggle.
+    checked: bool,
+    // Number box.
+    number: int,
+    minimum: int,
+    maximum: int,
+    suffix: string,
+    // Combo.
+    options: [ComboOption],
+    selected: int,
+    show-previews: bool,
+    combo-width: length,
+    // Pair card / pair header.
+    left-text: string,
+    right-text: string,
+    has-left: bool,
+    has-right: bool,
+    show-left: bool,
+    show-right: bool,
+    left-value: bool,
+    right-value: bool,
+    // Color card.
+    color: color,
+    color-unset: bool,
+    reset-text: string,
+    // Button card / about link.
+    button-text: string,
+    is-link: bool,
+    // Hotkey card.
+    modifier-options: [ComboOption],
+    modifier-selected: int,
+    modifier-placeholder: string,
+    key-text: string,
+    add-text: string,
+    add-enabled: bool,
+    feedback: string,
+    entries: [HotkeyEntry],
+    delete-tooltip: string,
+}
+
+export struct NavEntry {
+    label: string,
+    glyph: string,
+}
+
+// Card title + description column.
+component CardText inherits VerticalLayout {
+    in property <string> title;
+    in property <string> description;
+    alignment: center;
+    horizontal-stretch: 1;
+    min-width: 0px;
+    TitleText {
+        text: root.title;
+    }
+    if root.description != "": HorizontalLayout {
+        padding-top: 2px;
+        padding-right: 8px;
+        DescriptionText {
+            text: root.description;
+        }
+    }
+}
+
+// Keyboard stop for a text link (About GitHub row, search result page headings).
+component LinkFocus inherits FocusScope {
+    in property <int> focus-request;
+    callback activated();
+    callback got-focus();
+    focus-on-click: false;
+    focus-on-tab-navigation: SettingsFocus.page-plane;
+    changed focus-request => { self.focus(); }
+    focus-gained(reason) => {
+        if (reason == FocusReason.tab-navigation) {
+            SettingsFocus.keyboard-visible = true;
+        }
+        SettingsFocus.page-plane = true;
+        root.got-focus();
+    }
+    key-pressed(event) => {
+        if (event.text == Key.Return || event.text == " ") {
+            root.activated();
+            return accept;
+        }
+        reject
+    }
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: root.has-focus;
+        radius: 2px;
+    }
+}
+
+// Hotkey key capture box: read-only, shows the captured key, swallows every key but Tab.
+component KeyCaptureBox inherits Rectangle {
+    in property <string> text;
+    callback key(string) -> bool;
+    callback got-focus();
+
+    width: 90px;
+    height: 32px;
+    border-radius: 4px;
+    background: focus.has-focus ? Theme.text-box-focused : touch.has-hover ? Theme.hover : Theme.control-background;
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => {
+            SettingsFocus.keyboard-visible = false;
+            SettingsFocus.page-plane = true;
+            focus.focus();
+        }
+    }
+    focus := FocusScope {
+        focus-on-tab-navigation: SettingsFocus.page-plane;
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            SettingsFocus.page-plane = true;
+            root.got-focus();
+        }
+        capture-key-pressed(event) => {
+            if (event.text == Key.Tab || event.text == Key.Backtab) {
+                return reject;
+            }
+            root.key(event.text);
+            accept
+        }
+        capture-key-released(event) => {
+            event.text == Key.Tab || event.text == Key.Backtab ? reject : accept
+        }
+    }
+    Text {
+        x: 6px;
+        width: parent.width - 12px;
+        text: root.text;
+        font-family: Theme.ui-font;
+        font-size: 14px;
+        color: Theme.foreground;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+    Rectangle {
+        x: 6px + min(parent.width - 12px, measure.preferred-width) + 1px;
+        y: (parent.height - 18px) / 2;
+        width: 1px;
+        height: 18px;
+        background: Theme.foreground;
+        visible: focus.has-focus;
+    }
+    measure := Text {
+        visible: false;
+        text: root.text;
+        font-family: Theme.ui-font;
+        font-size: 14px;
+    }
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: focus.has-focus;
+        radius: 4px;
+    }
+}
+
+// A layout so the one conditional row below gives the item its height in the page layout (a plain
+// element with `if` children reports a zero preferred height, which stacks every row at the top).
+component ItemView inherits VerticalLayout {
+    in property <SettingsItem> item;
+    in property <int> index;
+
+    callback toggled(int, bool);
+    callback number-committed(int, int);
+    callback combo-selected(int, int);
+    callback pair-toggled(int, bool, bool);
+    callback color-clicked(int);
+    callback color-reset(int);
+    callback button-clicked(int);
+    callback link-clicked(int);
+    callback hotkey-modifiers(int, int);
+    callback hotkey-key(int, string) -> bool;
+    callback hotkey-add(int);
+    callback hotkey-delete(int, int);
+    callback scroll-request(length, length);
+    // Keyboard focus: `wants-focus` asks this row to focus its first control; every control
+    // reports focus so the page keeps it in view.
+    in property <bool> wants-focus;
+    callback focus-done();
+    callback ensure-visible(length, length);
+    private property <int> focus-tick;
+
+    private property <bool> scroll-done;
+    private property <bool> target: root.item.scroll-target;
+    changed target => { root.scroll-done = false; }
+
+    // Focuses the row's first control once its controls exist (rows can be brand new).
+    Timer {
+        interval: 1ms;
+        running: root.wants-focus;
+        triggered => {
+            root.focus-tick += 1;
+            root.focus-done();
+        }
+    }
+
+    // Scrolls a highlighted search target into view once the layout has placed it.
+    Timer {
+        interval: 30ms;
+        running: root.item.scroll-target && !root.scroll-done;
+        triggered => {
+            root.scroll-done = true;
+            root.scroll-request(root.y, root.height);
+        }
+    }
+
+    // --- Text-only rows -------------------------------------------------------------------------
+    if root.item.kind == ItemKind.page-header: VerticalLayout {
+        padding-bottom: 16px;
+        SectionHeaderText {
+            text: root.item.title;
+        }
+    }
+    if root.item.kind == ItemKind.page-link: VerticalLayout {
+        padding-bottom: 16px;
+        HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+            link-text := SectionHeaderText {
+                text: root.item.title;
+                opacity: link-touch.has-hover ? 0.8 : 1;
+                link-touch := TouchArea {
+                    mouse-cursor: MouseCursor.pointer;
+                    clicked => { root.link-clicked(root.index); }
+                }
+                LinkFocus {
+                    activated => { root.link-clicked(root.index); }
+                    got-focus => { root.ensure-visible(root.y, root.height); }
+                }
+                Tip {
+                    text: root.item.tooltip;
+                    hovered: link-touch.has-hover;
+                }
+            }
+            Text {
+                text: "\u{E76C}";
+                font-family: Theme.icon-font;
+                font-size: 14px;
+                color: Theme.foreground;
+                vertical-alignment: center;
+                opacity: link-touch.has-hover ? 0.8 : 0.5;
+            }
+        }
+    }
+    if root.item.kind == ItemKind.subsection: VerticalLayout {
+        padding-top: 16px;
+        padding-bottom: 8px;
+        SubsectionHeaderText {
+            text: root.item.title;
+        }
+    }
+    if root.item.kind == ItemKind.description: VerticalLayout {
+        padding-top: 2px;
+        padding-right: 8px;
+        padding-bottom: root.item.margin-bottom;
+        DescriptionText {
+            text: root.item.description;
+        }
+    }
+    // PairColumnHeader: subsection title with the two column captions over the toggles.
+    if root.item.kind == ItemKind.pair-header: HorizontalLayout {
+        padding-right: 16px;
+        VerticalLayout {
+            horizontal-stretch: 1;
+            padding-top: 16px;
+            padding-bottom: 8px;
+            SubsectionHeaderText {
+                text: root.item.title;
+            }
+        }
+        for caption in [root.item.left-text, root.item.right-text]: VerticalLayout {
+            width: 76px;
+            padding-top: 2px;
+            padding-right: 8px;
+            alignment: start;
+            DescriptionText {
+                text: caption;
+                font-weight: 600;
+                horizontal-alignment: center;
+            }
+        }
+    }
+    if root.item.kind == ItemKind.about-app: VerticalLayout {
+        TitleText {
+            text: root.item.title;
+        }
+        Rectangle {
+            height: 4px;
+        }
+        HorizontalLayout {
+            padding-top: 2px;
+            padding-right: 8px;
+            padding-bottom: 24px;
+            DescriptionText {
+                text: root.item.description;
+                opacity: 0.8 * 0.7;
+            }
+        }
+    }
+    if root.item.kind == ItemKind.about-row: HorizontalLayout {
+        padding-bottom: 6px;
+        Text {
+            width: 80px;
+            text: root.item.title;
+            font-family: Theme.ui-font;
+            font-size: 14px;
+            font-weight: 600;
+            color: Theme.foreground;
+        }
+        value := Text {
+            horizontal-stretch: 1;
+            text: root.item.description;
+            font-family: Theme.ui-font;
+            font-size: 14px;
+            color: Theme.foreground;
+            wrap: word-wrap;
+            if root.item.is-link: Rectangle {
+                x: 0px;
+                y: parent.height - 2px;
+                width: min(parent.width, about-measure.preferred-width);
+                height: 1px;
+                background: Theme.foreground;
+            }
+            about-measure := Text {
+                visible: false;
+                text: root.item.description;
+                font-family: Theme.ui-font;
+                font-size: 14px;
+            }
+            if root.item.is-link: TouchArea {
+                x: 0px;
+                width: min(parent.width, about-measure.preferred-width);
+                mouse-cursor: MouseCursor.pointer;
+                clicked => { root.link-clicked(root.index); }
+            }
+            if root.item.is-link: LinkFocus {
+                x: 0px;
+                width: min(parent.width, about-measure.preferred-width);
+                focus-request: root.focus-tick;
+                activated => { root.link-clicked(root.index); }
+                got-focus => { root.ensure-visible(root.y, root.height); }
+            }
+        }
+    }
+
+    // --- Cards ----------------------------------------------------------------------------------
+    if root.item.kind == ItemKind.toggle-card || root.item.kind == ItemKind.number-card
+        || root.item.kind == ItemKind.combo-card || root.item.kind == ItemKind.pair-card
+        || root.item.kind == ItemKind.color-card || root.item.kind == ItemKind.button-card
+        || root.item.kind == ItemKind.text-card: VerticalLayout {
+        padding-bottom: 6px;
+        Card {
+            card-enabled: root.item.enabled;
+            highlighted: root.item.highlighted;
+            HorizontalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                spacing: 16px;
+                CardText {
+                    title: root.item.title;
+                    description: root.item.description;
+                }
+                if root.item.kind == ItemKind.toggle-card: VerticalLayout {
+                    alignment: center;
+                    SettingsToggle {
+                        plane: 2;
+                        got-focus => { root.ensure-visible(root.y, root.height); }
+                        focus-request: root.focus-tick;
+                        checked: root.item.checked;
+                        enabled: root.item.enabled;
+                        toggled(v) => { root.toggled(root.index, v); }
+                    }
+                }
+                if root.item.kind == ItemKind.number-card: VerticalLayout {
+                    alignment: center;
+                    NumberBox {
+                        plane: 2;
+                        got-focus => { root.ensure-visible(root.y, root.height); }
+                        focus-request: root.focus-tick;
+                        value: root.item.number;
+                        minimum: root.item.minimum;
+                        maximum: root.item.maximum;
+                        suffix: root.item.suffix;
+                        enabled: root.item.enabled;
+                        committed(v) => { root.number-committed(root.index, v); }
+                    }
+                }
+                if root.item.kind == ItemKind.combo-card: VerticalLayout {
+                    alignment: center;
+                    SettingsComboBox {
+                        plane: 2;
+                        got-focus => { root.ensure-visible(root.y, root.height); }
+                        focus-request: root.focus-tick;
+                        options: root.item.options;
+                        selected: root.item.selected;
+                        show-previews: root.item.show-previews;
+                        fixed-width: root.item.combo-width;
+                        enabled: root.item.enabled;
+                        selection-changed(i) => { root.combo-selected(root.index, i); }
+                    }
+                }
+                if root.item.kind == ItemKind.pair-card: Rectangle {
+                    width: 152px;
+                    // Behind the toggles: hover over the pair area shows "{left} / {right}".
+                    pair-touch := TouchArea { }
+                    Tip {
+                        text: root.item.tooltip;
+                        hovered: pair-touch.has-hover;
+                    }
+                    HorizontalLayout {
+                        for side in [
+                            { right: false, has: root.item.has-left, show: root.item.show-left, value: root.item.left-value, first: root.item.has-left && root.item.show-left },
+                            { right: true, has: root.item.has-right, show: root.item.show-right, value: root.item.right-value, first: !(root.item.has-left && root.item.show-left) },
+                        ]: Rectangle {
+                            width: 76px;
+                            if side.has && side.show: SettingsToggle {
+                                plane: 2;
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                focus-request: side.first ? root.focus-tick : 0;
+                                checked: side.value;
+                                enabled: root.item.enabled;
+                                toggled(v) => { root.pair-toggled(root.index, side.right, v); }
+                            }
+                        }
+                    }
+                }
+                if root.item.kind == ItemKind.color-card: HorizontalLayout {
+                    alignment: end;
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 0px;
+                            ColorSwatch {
+                                plane: 2;
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                focus-request: root.focus-tick;
+                                swatch-color: root.item.color;
+                                unset: root.item.color-unset;
+                                tooltip: root.item.tooltip;
+                                clicked => { root.color-clicked(root.index); }
+                            }
+                            Rectangle {
+                                width: 6px;
+                            }
+                            SettingsButton {
+                                plane: 2;
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                text: root.item.reset-text;
+                                clicked => { root.color-reset(root.index); }
+                            }
+                        }
+                    }
+                }
+                if root.item.kind == ItemKind.button-card: VerticalLayout {
+                    alignment: center;
+                    SettingsButton {
+                        plane: 2;
+                        got-focus => { root.ensure-visible(root.y, root.height); }
+                        focus-request: root.focus-tick;
+                        text: root.item.button-text;
+                        clicked => { root.button-clicked(root.index); }
+                    }
+                }
+            }
+        }
+    }
+
+    // --- Hotkey card (TrayAppDotNETHotkeysSection row) --------------------------------------------
+    if root.item.kind == ItemKind.hotkey-card: VerticalLayout {
+        padding-bottom: 6px;
+        Card {
+            highlighted: root.item.highlighted;
+            VerticalLayout {
+                padding-left: 16px;
+                padding-right: 16px;
+                padding-top: 12px;
+                padding-bottom: 12px;
+                HorizontalLayout {
+                    VerticalLayout {
+                        alignment: center;
+                        horizontal-stretch: 1;
+                        min-width: 200px;
+                        padding-right: 12px;
+                        TitleText {
+                            text: root.item.title;
+                        }
+                        if root.item.description != "": HorizontalLayout {
+                            padding-top: 2px;
+                            padding-right: 8px;
+                            DescriptionText {
+                                text: root.item.description;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            SettingsComboBox {
+                                plane: 2;
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                focus-request: root.focus-tick;
+                                fixed-width: 170px;
+                                options: root.item.modifier-options;
+                                selected: root.item.modifier-selected;
+                                placeholder: root.item.modifier-placeholder;
+                                selection-changed(i) => { root.hotkey-modifiers(root.index, i); }
+                            }
+                            KeyCaptureBox {
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                text: root.item.key-text;
+                                key(t) => { root.hotkey-key(root.index, t) }
+                            }
+                            SettingsButton {
+                                plane: 2;
+                                got-focus => { root.ensure-visible(root.y, root.height); }
+                                text: root.item.add-text;
+                                enabled: root.item.add-enabled;
+                                min-button-width: 70px;
+                                clicked => { root.hotkey-add(root.index); }
+                            }
+                        }
+                    }
+                }
+                if root.item.entries.length > 0: HorizontalLayout {
+                    padding-top: 8px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-width: 200px;
+                    }
+                    VerticalLayout {
+                        width: 170px + 8px + 90px + 8px + max(70px, add-measure.preferred-width + 24px);
+                        for entry[entry-index] in root.item.entries: VerticalLayout {
+                            padding-bottom: 4px;
+                            Rectangle {
+                                background: Theme.control-background;
+                                border-radius: Theme.control-corner-radius;
+                                HorizontalLayout {
+                                    entry-text := Text {
+                                        horizontal-stretch: 1;
+                                        text: entry.text;
+                                        font-family: Theme.ui-font;
+                                        font-size: 14px;
+                                        color: Theme.foreground;
+                                        vertical-alignment: center;
+                                        entry-touch := TouchArea { }
+                                        Tip {
+                                            text: entry.tooltip;
+                                            hovered: entry-touch.has-hover;
+                                        }
+                                    }
+                                    if entry.problem != "": Text {
+                                        text: "\u{E7BA}";
+                                        font-family: Theme.icon-font;
+                                        font-size: 14px;
+                                        color: Theme.foreground;
+                                        vertical-alignment: center;
+                                        problem-touch := TouchArea { }
+                                        Tip {
+                                            text: entry.problem;
+                                            hovered: problem-touch.has-hover;
+                                        }
+                                    }
+                                    if entry.problem != "": Rectangle {
+                                        width: 8px;
+                                    }
+                                    SettingsButton {
+                                        plane: 2;
+                                        got-focus => { root.ensure-visible(root.y, root.height); }
+                                        horizontal-stretch: 0;
+                                        min-button-width: 32px;
+                                        min-button-height: 29px;
+                                        padding-x: 0px;
+                                        padding-y: 0px;
+                                        glyph: "\u{E653}";
+                                        glyph-size: 10px;
+                                        tooltip: root.item.delete-tooltip;
+                                        clicked => { root.hotkey-delete(root.index, entry-index); }
+                                    }
+                                }
+                                // Entry text margin 12,6,0,6.
+                            }
+                        }
+                    }
+                    add-measure := Text {
+                        visible: false;
+                        text: root.item.add-text;
+                        font-family: Theme.ui-font;
+                        font-size: 14px;
+                    }
+                }
+                if root.item.feedback != "": HorizontalLayout {
+                    padding-top: 6px;
+                    padding-right: 8px;
+                    DescriptionText {
+                        text: root.item.feedback;
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component SettingsWindow inherits Window {
+    // Shell.
+    in property <string> window-title: "Settings";
+    in property <string> header-text: "Settings";
+    in property <string> search-placeholder: "Search settings";
+    in property <[NavEntry]> nav-items;
+    // -1 while search results are shown (no row selected).
+    in property <int> selected-page;
+    in property <bool> windows11-nav;
+    in-out property <length> sidebar-width: 230px;
+    in-out property <string> search-text;
+    in property <[SettingsItem]> items;
+    in-out property <length> scroll-y;
+    out property <length> scroll-max: max(0px, flick.content-height - flick.height);
+    // Scroll bar context menu (ScrollBarMenu_*).
+    in property <string> menu-scroll-here: "Scroll Here";
+    in property <string> menu-top: "Top";
+    in property <string> menu-bottom: "Bottom";
+    in property <string> menu-page-up: "Page Up";
+    in property <string> menu-page-down: "Page Down";
+    in property <string> menu-scroll-up: "Scroll Up";
+    in property <string> menu-scroll-down: "Scroll Down";
+    // Confirm overlay.
+    in property <bool> confirm-visible;
+    in property <string> confirm-title;
+    in property <string> confirm-message;
+    in property <string> confirm-ok-text;
+    // Empty: message mode (no Cancel button).
+    in property <string> confirm-cancel-text;
+
+    // Row whose first control should take keyboard focus (-1: none). Set by Rust after Space/Right
+    // on a page row or Enter in the search box.
+    in-out property <int> focus-row: -1;
+    // Keyboard focus requests for the nav rows: `nav-focus-target` gets focus when the tick moves.
+    private property <int> nav-focus-tick;
+    private property <int> nav-focus-target;
+    private property <bool> ctrl-down;
+    private property <bool> resizing;
+    private property <length> resize-start-width;
+    private property <length> resize-start-x;
+    private property <length> menu-click-y;
+    private property <bool> confirm-cancel-focused;
+    private property <length> sidebar-max: max(140px, min(520px, root.width - 320px));
+    private property <length> effective-sidebar-width: max(140px, min(root.sidebar-max, root.sidebar-width));
+
+    callback nav-activated(int);
+    callback nav-open(int);
+    callback search-edited(string);
+    callback search-enter();
+    callback sidebar-resized(length);
+    callback sidebar-reset();
+    callback confirm-finished(bool);
+    callback toggled(int, bool);
+    callback number-committed(int, int);
+    callback combo-selected(int, int);
+    callback pair-toggled(int, bool, bool);
+    callback color-clicked(int);
+    callback color-reset(int);
+    callback button-clicked(int);
+    callback link-clicked(int);
+    callback hotkey-modifiers(int, int);
+    callback hotkey-key(int, string) -> bool;
+    callback hotkey-add(int);
+    callback hotkey-delete(int, int);
+
+    public function focus-search() { search.focus-box(); }
+
+    function focus-nav(index: int) {
+        root.nav-focus-target = max(0, min(root.nav-items.length - 1, index));
+        root.nav-focus-tick += 1;
+    }
+
+    changed confirm-visible => {
+        if (root.confirm-visible) {
+            root.confirm-cancel-focused = false;
+            confirm-ok.focus-button();
+        }
+    }
+
+    title: root.window-title;
+    preferred-width: 960px;
+    preferred-height: 670px;
+    min-width: 720px;
+    min-height: 520px;
+    background: Theme.background;
+    default-font-family: Theme.ui-font;
+    default-font-size: 14px;
+
+    root-scope := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+
+        capture-key-pressed(event) => {
+            if (SettingsFocus.is-navigation-key(event.text)) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            if (event.text == Key.Control || event.text == Key.ControlR) {
+                root.ctrl-down = true;
+            }
+            if (root.confirm-visible) {
+                if (event.text == Key.Escape) {
+                    root.confirm-finished(false);
+                    return accept;
+                }
+                if (event.text == Key.Tab || event.text == Key.Backtab || event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                    root.confirm-cancel-focused = root.confirm-cancel-text != "" && !root.confirm-cancel-focused;
+                    if (!root.confirm-cancel-focused) {
+                        confirm-ok.focus-button();
+                    }
+                    return accept;
+                }
+                // Enter/Space reach the focused overlay button; every other key is swallowed.
+                if (event.text == Key.Return || event.text == " ") {
+                    return reject;
+                }
+                return accept;
+            }
+            reject
+        }
+        capture-key-released(event) => {
+            if (event.text == Key.Control || event.text == Key.ControlR) {
+                root.ctrl-down = false;
+            }
+            reject
+        }
+        key-pressed(event) => {
+            // Left/Escape that no page control consumed: back to the page list (or the search box
+            // while results are shown).
+            if ((event.text == Key.LeftArrow || event.text == Key.Escape) && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift) {
+                if (root.selected-page < 0) {
+                    search.focus-box();
+                } else {
+                    root.focus-nav(root.selected-page);
+                }
+                return accept;
+            }
+            reject
+        }
+
+        // --- Sidebar ------------------------------------------------------------------------------
+        sidebar := VerticalLayout {
+            x: 0px;
+            y: 0px;
+            width: root.effective-sidebar-width;
+            height: root.height;
+            HorizontalLayout {
+                padding-left: 24px;
+                padding-top: 8px;
+                padding-right: 20px;
+                padding-bottom: 20px;
+                SectionHeaderText {
+                    text: root.header-text;
+                    wrap: no-wrap;
+                    overflow: elide;
+                }
+            }
+            VerticalLayout {
+                vertical-stretch: 1;
+                padding-left: 8px;
+                padding-right: 8px;
+                alignment: start;
+                for entry[i] in root.nav-items: NavItem {
+                    property <int> tick: root.nav-focus-tick;
+                    label: entry.label;
+                    glyph: entry.glyph;
+                    selected: i == root.selected-page;
+                    windows11: root.windows11-nav;
+                    activated => { root.nav-activated(i); }
+                    open-page => {
+                        root.nav-open(i);
+                        if (root.focus-row < 0) {
+                            page-focus.focus();
+                        }
+                    }
+                    move-focus(delta) => { root.focus-nav(i + delta); }
+                    changed tick => {
+                        if (i == root.nav-focus-target) {
+                            self.focus-row();
+                        }
+                    }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 8px;
+                padding-bottom: 12px;
+                search := SearchBox {
+                    placeholder: root.search-placeholder;
+                    text <=> root.search-text;
+                    edited(t) => { root.search-edited(t); }
+                    enter-pressed => {
+                        root.search-enter();
+                        if (root.focus-row < 0) {
+                            page-focus.focus();
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- Page area ----------------------------------------------------------------------------
+        content := Rectangle {
+            x: root.effective-sidebar-width;
+            y: 0px;
+            width: root.width - root.effective-sidebar-width;
+            height: root.height;
+            background: Theme.background;
+            clip: true;
+
+            flick := Flickable {
+                content-width: self.width;
+                content-height: page.preferred-height;
+                content-y <=> root.scroll-y;
+                // Fallback focus target for a page without controls.
+                page-focus := FocusScope {
+                    width: 0px;
+                    height: 0px;
+                    focus-on-click: false;
+                    focus-on-tab-navigation: false;
+                    focus-gained(reason) => { SettingsFocus.page-plane = true; }
+                }
+                page := VerticalLayout {
+                    width: flick.width;
+                    padding-left: 24px;
+                    padding-top: 4px;
+                    padding-right: 30px;
+                    padding-bottom: 28px;
+                    alignment: start;
+                    for item[i] in root.items: ItemView {
+                        item: item;
+                        index: i;
+                        wants-focus: i == root.focus-row;
+                        focus-done => { root.focus-row = -1; }
+                        ensure-visible(y, h) => {
+                            // Keep a keyboard-focused card fully in view.
+                            let top = -root.scroll-y;
+                            if (y < top) {
+                                root.scroll-y = -max(0px, y - 16px);
+                            } else if (y + h > top + flick.height) {
+                                root.scroll-y = -max(0px, min(root.scroll-max, y + h - flick.height + 16px));
+                            }
+                        }
+                        toggled(row, v) => { root.toggled(row, v); }
+                        number-committed(row, v) => { root.number-committed(row, v); }
+                        combo-selected(row, v) => { root.combo-selected(row, v); }
+                        pair-toggled(row, right, v) => { root.pair-toggled(row, right, v); }
+                        color-clicked(row) => { root.color-clicked(row); }
+                        color-reset(row) => { root.color-reset(row); }
+                        button-clicked(row) => { root.button-clicked(row); }
+                        link-clicked(row) => { root.link-clicked(row); }
+                        hotkey-modifiers(row, v) => { root.hotkey-modifiers(row, v); }
+                        hotkey-key(row, t) => { root.hotkey-key(row, t) }
+                        hotkey-add(row) => { root.hotkey-add(row); }
+                        hotkey-delete(row, e) => { root.hotkey-delete(row, e); }
+                        scroll-request(y, h) => {
+                            // Keep 16px of context above the target card.
+                            root.scroll-y = -max(0px, min(root.scroll-max, y - 16px));
+                        }
+                    }
+                }
+            }
+
+            ScrollBar {
+                x: parent.width - self.width;
+                height: parent.height;
+                visible-height: flick.height;
+                content-height: flick.content-height;
+                content-y <=> root.scroll-y;
+                context-menu(mx, my) => {
+                    root.menu-click-y = my;
+                    scroll-menu.show();
+                }
+            }
+
+            scroll-menu := PopupWindow {
+                x: parent.width - 200px;
+                y: max(0px, min(parent.height - 320px, root.menu-click-y));
+                width: 184px;
+                Rectangle {
+                    background: Theme.background;
+                    border-color: Theme.border;
+                    border-width: 1px;
+                    border-radius: Theme.rounded-corners ? 8px : 0px;
+                    drop-shadow-color: Theme.menu-shadow;
+                    drop-shadow-blur: 8px;
+                    VerticalLayout {
+                        padding: 4px;
+                        for entry[i] in [
+                            { text: root.menu-scroll-here, separator: false },
+                            { text: "", separator: true },
+                            { text: root.menu-top, separator: false },
+                            { text: root.menu-bottom, separator: false },
+                            { text: "", separator: true },
+                            { text: root.menu-page-up, separator: false },
+                            { text: root.menu-page-down, separator: false },
+                            { text: "", separator: true },
+                            { text: root.menu-scroll-up, separator: false },
+                            { text: root.menu-scroll-down, separator: false },
+                        ]: Rectangle {
+                            height: entry.separator ? 9px : max(28px, menu-text.preferred-height + 12px);
+                            border-radius: Theme.control-corner-radius;
+                            background: !entry.separator && menu-touch.has-hover ? Theme.hover : transparent;
+                            if entry.separator: Rectangle {
+                                x: 8px;
+                                width: parent.width - 16px;
+                                height: 1px;
+                                background: Theme.border;
+                            }
+                            menu-text := Text {
+                                x: 12px;
+                                text: entry.text;
+                                font-size: Theme.menu-font-size;
+                                color: Theme.foreground;
+                                vertical-alignment: center;
+                            }
+                            menu-touch := TouchArea {
+                                enabled: !entry.separator;
+                                clicked => {
+                                    let max-offset = root.scroll-max;
+                                    let current = -root.scroll-y;
+                                    if (i == 0) {
+                                        root.scroll-y = -max(0px, min(max-offset, root.menu-click-y / max(1px, flick.height) * max-offset));
+                                    } else if (i == 2) {
+                                        root.scroll-y = 0px;
+                                    } else if (i == 3) {
+                                        root.scroll-y = -max-offset;
+                                    } else if (i == 5) {
+                                        root.scroll-y = -max(0px, current - flick.height);
+                                    } else if (i == 6) {
+                                        root.scroll-y = -min(max-offset, current + flick.height);
+                                    } else if (i == 8) {
+                                        root.scroll-y = -max(0px, current - 72px);
+                                    } else if (i == 9) {
+                                        root.scroll-y = -min(max-offset, current + 72px);
+                                    }
+                                    scroll-menu.close();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sidebar resize handle: 10px over the sidebar's right edge, live only while Ctrl is held.
+        TouchArea {
+            x: root.effective-sidebar-width - 10px;
+            y: 0px;
+            width: 10px;
+            height: root.height;
+            enabled: root.ctrl-down || root.resizing;
+            mouse-cursor: root.ctrl-down || root.resizing ? MouseCursor.ew-resize : MouseCursor.default;
+            pointer-event(event) => {
+                root.ctrl-down = event.modifiers.control || root.resizing;
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left && event.modifiers.control) {
+                    root.resizing = true;
+                    root.resize-start-width = root.effective-sidebar-width;
+                    root.resize-start-x = self.absolute-position.x + self.mouse-x;
+                } else if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left && root.resizing) {
+                    root.resizing = false;
+                    if (abs((root.sidebar-width - root.resize-start-width) / 1px) >= 0.01) {
+                        root.sidebar-resized(root.sidebar-width);
+                    }
+                } else if (event.kind == PointerEventKind.up && event.button == PointerEventButton.right && event.modifiers.control) {
+                    root.sidebar-reset();
+                }
+            }
+            moved => {
+                if (root.resizing && self.pressed) {
+                    let next = max(140px, min(root.sidebar-max, root.resize-start-width + (self.absolute-position.x + self.mouse-x - root.resize-start-x)));
+                    if (abs((next - root.sidebar-width) / 1px) >= 0.01) {
+                        root.sidebar-width = next;
+                    }
+                }
+            }
+        }
+
+        // --- Confirm overlay (BuildConfirmOverlay, compact dialog) --------------------------------
+        Rectangle {
+            visible: root.confirm-visible;
+            background: Theme.flyout-overlay-backdrop;
+            TouchArea { }
+            Rectangle {
+                width: max(360px, min(460px, dialog.preferred-width));
+                height: dialog.preferred-height;
+                background: Theme.card-background;
+                border-width: 1px;
+                border-color: Theme.border;
+                border-radius: Theme.rounded-corners ? 6px : 0px;
+                dialog := VerticalLayout {
+                    padding: 24px;
+                    Text {
+                        text: root.confirm-title;
+                        font-size: 16px;
+                        font-weight: 600;
+                        color: Theme.foreground;
+                        wrap: word-wrap;
+                    }
+                    Rectangle {
+                        height: 8px;
+                    }
+                    HorizontalLayout {
+                        padding-right: 8px;
+                        DescriptionText {
+                            text: root.confirm-message;
+                        }
+                    }
+                    Rectangle {
+                        height: 16px;
+                    }
+                    HorizontalLayout {
+                        alignment: end;
+                        spacing: 8px;
+                        if root.confirm-cancel-text != "": SettingsButton {
+                            property <bool> wants-focus: root.confirm-cancel-focused;
+                            tab-enabled: root.confirm-visible;
+                            text: root.confirm-cancel-text;
+                            min-button-width: 96px;
+                            clicked => { root.confirm-finished(false); }
+                            changed wants-focus => {
+                                if (self.wants-focus) {
+                                    self.focus-button();
+                                }
+                            }
+                        }
+                        confirm-ok := SettingsButton {
+                            tab-enabled: root.confirm-visible;
+                            text: root.confirm-ok-text;
+                            min-button-width: 96px;
+                            // Message mode (no Cancel): OK completes with false.
+                            clicked => { root.confirm-finished(root.confirm-cancel-text != ""); }
+                        }
+                    }
+                }
+            }
+        }
+
+        TooltipHost {
+            width: root.width;
+            height: root.height;
+        }
+    }
+}

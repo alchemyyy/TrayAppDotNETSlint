@@ -1,0 +1,16 @@
+[package]
+name = "tadn_common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+log.workspace = true
+roxmltree.workspace = true
+windows.workspace = true
+windows-core.workspace = true
+
+[lints]
+workspace = true

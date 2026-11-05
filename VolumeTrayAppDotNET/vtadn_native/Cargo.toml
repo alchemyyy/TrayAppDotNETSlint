@@ -1,0 +1,19 @@
+[package]
+name = "vtadn_native"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vtadn_model.workspace = true
+tadn_common.workspace = true
+log.workspace = true
+# `DevGetObjects` (Bluetooth pairing store query) lives in Win32_Devices_DeviceQuery; the ETW
+# consumer types (`EVENT_TRACE_LOGFILEW`, `OpenTraceW`) need Win32_System_Time.
+windows = { workspace = true, features = ["Win32_Devices_DeviceQuery", "Win32_System_Time"] }
+windows-core.workspace = true
+
+[lints]
+workspace = true

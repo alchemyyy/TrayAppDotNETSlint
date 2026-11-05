@@ -1,0 +1,522 @@
+// Color picker window (port of TrayAppDotNETCommon UI/Controls/ColorPickerWindow.cs + .axaml).
+// Rust owns the color model (HSV math, free hue, hex parsing, preview throttle); this file draws
+// the controls and reports raw input. Layout numbers are ColorPickerWindow.axaml's.
+
+import { Theme } from "../theme.slint";
+import { SettingsButton, Tip } from "controls.slint";
+
+// Vertical slider body shared by hue/alpha bars and the r/g/b sliders. `value` runs from `minimum`
+// to `maximum`; `reversed` puts `minimum` at the top (alpha), otherwise `maximum` is at the top.
+component VerticalValueArea {
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 255;
+    in property <bool> reversed;
+    in property <float> small-step: 1;
+    in property <float> large-step: 16;
+    out property <length> thumb-y: max(0px, min(root.height, (root.reversed ? (root.value - root.minimum) : (root.maximum - root.value)) / (root.maximum - root.minimum) * root.height));
+    out property <bool> has-focus: focus.has-focus;
+    callback value-changed(float);
+
+    function clamp-value(v: float) -> float {
+        return max(root.minimum, min(root.maximum, v));
+    }
+
+    function from-y(y: length) -> float {
+        let t = max(0, min(1, y / root.height));
+        return root.reversed ? root.minimum + t * (root.maximum - root.minimum) : root.maximum - t * (root.maximum - root.minimum);
+    }
+
+    function change(v: float) {
+        let c = root.clamp-value(v);
+        if (abs(c - root.value) >= 0.0001) {
+            root.value-changed(c);
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                focus.focus();
+                root.change(root.from-y(self.mouse-y));
+            }
+        }
+        moved => {
+            if (self.pressed) {
+                root.change(root.from-y(self.mouse-y));
+            }
+        }
+        scroll-event(event) => {
+            if (event.delta-y == 0) {
+                return reject;
+            }
+            let step = event.modifiers.control ? root.large-step : root.small-step;
+            root.change(root.value + (event.delta-y > 0 ? step : -step));
+            accept
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            // Up/Right raise the value (on the reversed alpha bar that moves the thumb down).
+            if (event.text == Key.UpArrow || event.text == Key.RightArrow) {
+                root.change(root.value + root.small-step);
+                return accept;
+            }
+            if (event.text == Key.DownArrow || event.text == Key.LeftArrow) {
+                root.change(root.value - root.small-step);
+                return accept;
+            }
+            if (event.text == Key.PageUp) {
+                root.change(root.value + root.large-step);
+                return accept;
+            }
+            if (event.text == Key.PageDown) {
+                root.change(root.value - root.large-step);
+                return accept;
+            }
+            if (event.text == Key.Home) {
+                root.change(root.minimum);
+                return accept;
+            }
+            if (event.text == Key.End) {
+                root.change(root.maximum);
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Hue or alpha bar: gradient body with a full-width thumb.
+component GradientBar {
+    in property <brush> fill;
+    in property <float> value;
+    in property <float> maximum: 255;
+    in property <bool> reversed;
+    in property <float> large-step: 16;
+    in property <color> thumb-fill;
+    in property <color> thumb-border;
+    callback value-changed(float);
+
+    width: 32px;
+
+    Rectangle {
+        x: 0.5px;
+        y: 0.5px;
+        width: parent.width - 1px;
+        height: parent.height - 1px;
+        border-radius: 4px;
+        background: root.fill;
+        border-width: 1px;
+        border-color: Theme.border;
+    }
+    Rectangle {
+        x: 1px;
+        y: area.thumb-y - 4px;
+        width: parent.width - 2px;
+        height: 8px;
+        border-radius: 2px;
+        background: root.thumb-fill;
+        border-width: 1px;
+        border-color: root.thumb-border;
+    }
+    area := VerticalValueArea {
+        value: root.value;
+        maximum: root.maximum;
+        reversed: root.reversed;
+        large-step: root.large-step;
+        value-changed(v) => { root.value-changed(v); }
+    }
+}
+
+// r/g/b slider: 4px track, progress from the thumb to the bottom, 22x10 thumb.
+component ChannelSlider {
+    in property <float> value;
+    callback value-changed(float);
+
+    width: 22px;
+
+    Rectangle {
+        x: (parent.width - 4px) / 2;
+        width: 4px;
+        border-radius: 2px;
+        background: Theme.slider-track;
+    }
+    Rectangle {
+        x: (parent.width - 4px) / 2;
+        y: area.thumb-y;
+        width: 4px;
+        height: parent.height - area.thumb-y;
+        border-radius: 2px;
+        background: Theme.slider-progress;
+    }
+    Rectangle {
+        y: area.thumb-y - 5px;
+        width: 22px;
+        height: 10px;
+        border-radius: 5px;
+        background: Theme.slider-thumb;
+    }
+    area := VerticalValueArea {
+        value: root.value;
+        value-changed(v) => { root.value-changed(v); }
+    }
+}
+
+component ChannelLabel inherits Text {
+    font-family: Theme.ui-font;
+    font-size: 14px;
+    font-weight: 600;
+    color: Theme.foreground;
+    horizontal-alignment: center;
+}
+
+// Hex text box: settings text box metrics (94x32, Consolas 14, padding 4,0, no border).
+component HexBox inherits Rectangle {
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+
+    width: 94px;
+    height: 32px;
+    border-radius: 4px;
+    background: input.has-focus || touch.pressed ? Theme.text-box-focused : touch.has-hover ? Theme.hover : Theme.control-background;
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.text;
+        clicked => { input.focus(); }
+    }
+    HorizontalLayout {
+        padding-left: 4px;
+        padding-right: 4px;
+        input := TextInput {
+            single-line: true;
+            vertical-alignment: center;
+            font-family: "Consolas";
+            font-size: 14px;
+            color: Theme.foreground;
+            selection-background-color: Theme.text-selection;
+            selection-foreground-color: Theme.foreground;
+            edited => { root.edited(self.text); }
+            key-released(event) => {
+                if (event.text == Key.Return) {
+                    self.clear-focus();
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+}
+
+export component ColorPickerWindow inherits Window {
+    in property <string> window-title;
+    in property <string> close-tooltip: "Close";
+    in property <string> hue-label: "hue";
+    in property <string> alpha-label: "alpha";
+    in property <string> r-label: "r";
+    in property <string> g-label: "g";
+    in property <string> b-label: "b";
+    in property <string> rgba-label: "rgba hex:";
+    in property <string> argb-label: "argb hex:";
+    in property <string> default-text: "Default";
+    in property <string> reset-text: "Reset";
+
+    // Model, pushed by Rust.
+    in property <color> current-color;
+    in property <color> hue-color;
+    in property <float> hue;
+    in property <float> saturation;
+    in property <float> brightness;
+    in property <int> alpha;
+    in property <int> red;
+    in property <int> green;
+    in property <int> blue;
+    in property <color> alpha-thumb-border;
+    in-out property <string> rgba-text;
+    in-out property <string> argb-text;
+
+    callback close-requested();
+    callback drag-requested();
+    callback square-changed(float, float);
+    callback hue-changed(float);
+    callback alpha-changed(float);
+    callback red-changed(float);
+    callback green-changed(float);
+    callback blue-changed(float);
+    callback rgba-edited(string);
+    callback argb-edited(string);
+    callback default-clicked();
+    callback reset-clicked();
+
+    title: root.window-title;
+    no-frame: true;
+    width: 408px;
+    height: 284px;
+    background: transparent;
+    default-font-family: Theme.ui-font;
+
+    private property <length> grid-height: 143px;
+
+    Rectangle {
+        background: Theme.background;
+        border-width: 1px;
+        border-color: Theme.border;
+        border-radius: Theme.rounded-corners ? 8px : 0px;
+        clip: Theme.rounded-corners;
+
+        // Title bar (TrayAppDotNETDialogChrome.TitleBar): drag to move.
+        title-touch := TouchArea {
+            x: 1px;
+            y: 1px;
+            width: parent.width - 2px - 46px;
+            height: 32px;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    root.drag-requested();
+                }
+            }
+        }
+        Text {
+            x: 17px;
+            y: 1px;
+            width: parent.width - 17px - 46px - 8px;
+            height: 32px;
+            text: root.window-title;
+            font-size: 14px;
+            color: Theme.foreground;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+        close := Rectangle {
+            x: parent.width - 1px - 46px;
+            y: 1px;
+            width: 46px;
+            height: 32px;
+            background: close-touch.pressed ? Theme.close-button-pressed : close-touch.has-hover ? Theme.close-button-hover : transparent;
+            Text {
+                text: "\u{E653}";
+                font-family: Theme.icon-font;
+                font-size: 10px;
+                color: close-touch.has-hover || close-touch.pressed ? Theme.close-button-glyph-active : Theme.foreground;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            close-touch := TouchArea {
+                clicked => { root.close-requested(); }
+            }
+            Tip {
+                text: root.close-tooltip;
+                hovered: close-touch.has-hover;
+                suppressed: close-touch.pressed;
+            }
+        }
+
+        // Body: margin 20,12,20,16 below the 32px title bar.
+        body := Rectangle {
+            x: 21px;
+            y: 1px + 32px + 12px;
+            width: parent.width - 42px;
+            height: parent.height - 2px - 32px - 12px - 16px;
+
+            // Saturation/value square (column 0, rows 0-1).
+            square := Rectangle {
+                x: 0px;
+                y: 0px;
+                width: 160px;
+                height: root.grid-height;
+                Rectangle {
+                    border-radius: 6px;
+                    background: root.hue-color;
+                }
+                Rectangle {
+                    border-radius: 6px;
+                    background: @linear-gradient(90deg, #FFFFFFFF 0%, #FFFFFF00 100%);
+                }
+                Rectangle {
+                    border-radius: 6px;
+                    background: @linear-gradient(180deg, #00000000 0%, #000000FF 100%);
+                }
+                Rectangle {
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: Theme.border;
+                }
+                // Marker: outer r8 black ring, inner r7 current color with white ring.
+                Rectangle {
+                    x: root.saturation * square.width - 8px;
+                    y: (1 - root.brightness) * square.height - 8px;
+                    width: 16px;
+                    height: 16px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #000000;
+                    Rectangle {
+                        x: 1px;
+                        y: 1px;
+                        width: 14px;
+                        height: 14px;
+                        border-radius: 7px;
+                        background: root.current-color;
+                        border-width: 1px;
+                        border-color: #FFFFFF;
+                    }
+                }
+                square-touch := TouchArea {
+                    mouse-cursor: MouseCursor.crosshair;
+                    function report() {
+                        root.square-changed(
+                            max(0, min(1, self.mouse-x / square.width)),
+                            max(0, min(1, 1 - self.mouse-y / square.height)));
+                    }
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                            square-focus.focus();
+                            self.report();
+                        }
+                    }
+                    moved => {
+                        if (self.pressed) {
+                            self.report();
+                        }
+                    }
+                }
+                square-focus := FocusScope {
+                    focus-on-click: false;
+                }
+            }
+
+            GradientBar {
+                x: 176px;
+                y: 0px;
+                height: root.grid-height;
+                fill: @linear-gradient(180deg, #FF0000 0%, #FF00FF 16.667%, #0000FF 33.333%, #00FFFF 50%, #00FF00 66.667%, #FFFF00 83.333%, #FF0000 100%);
+                value: root.hue;
+                maximum: 360;
+                large-step: 30;
+                thumb-fill: root.hue-color;
+                thumb-border: Theme.foreground;
+                value-changed(v) => { root.hue-changed(v); }
+            }
+
+            GradientBar {
+                x: 216px;
+                y: 0px;
+                height: root.grid-height;
+                fill: @linear-gradient(180deg, root.current-color.with-alpha(0) 0%, root.current-color.with-alpha(1) 100%);
+                value: root.alpha;
+                reversed: true;
+                thumb-fill: root.current-color;
+                thumb-border: root.alpha-thumb-border;
+                value-changed(v) => { root.alpha-changed(v); }
+            }
+
+            // r/g/b value labels (row 0) and sliders (row 1, 120px).
+            for channel[i] in [
+                { x: 262px, value: root.red },
+                { x: 298px, value: root.green },
+                { x: 334px, value: root.blue },
+            ]: ChannelLabel {
+                x: channel.x;
+                y: 0px;
+                width: 22px;
+                height: root.grid-height - 120px - 4px;
+                vertical-alignment: bottom;
+                text: channel.value;
+            }
+            ChannelSlider {
+                x: 262px;
+                y: root.grid-height - 120px;
+                height: 120px;
+                value: root.red;
+                value-changed(v) => { root.red-changed(v); }
+            }
+            ChannelSlider {
+                x: 298px;
+                y: root.grid-height - 120px;
+                height: 120px;
+                value: root.green;
+                value-changed(v) => { root.green-changed(v); }
+            }
+            ChannelSlider {
+                x: 334px;
+                y: root.grid-height - 120px;
+                height: 120px;
+                value: root.blue;
+                value-changed(v) => { root.blue-changed(v); }
+            }
+
+            // Footer labels (row 2, margin-top 6).
+            for label[i] in [
+                { x: 176px, w: 32px, text: root.hue-label },
+                { x: 216px, w: 32px, text: root.alpha-label },
+                { x: 262px, w: 22px, text: root.r-label },
+                { x: 298px, w: 22px, text: root.g-label },
+                { x: 334px, w: 22px, text: root.b-label },
+            ]: ChannelLabel {
+                x: label.x - 8px;
+                y: root.grid-height + 6px;
+                width: label.w + 16px;
+                text: label.text;
+            }
+
+            // Footer grid (pulled up by 34px): hex rows in column 0, buttons in columns 2-10.
+            HorizontalLayout {
+                x: 0px;
+                y: root.grid-height + 25px + 16px - 34px;
+                height: 32px;
+                spacing: 8px;
+                ChannelLabel {
+                    text: root.rgba-label;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+                HexBox {
+                    text <=> root.rgba-text;
+                    edited(t) => { root.rgba-edited(t); }
+                }
+            }
+            HorizontalLayout {
+                x: 0px;
+                y: root.grid-height + 25px + 16px - 34px + 32px + 6px;
+                height: 35px;
+                spacing: 8px;
+                ChannelLabel {
+                    text: root.argb-label;
+                    vertical-alignment: center;
+                    horizontal-alignment: left;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    HexBox {
+                        text <=> root.argb-text;
+                        edited(t) => { root.argb-edited(t); }
+                    }
+                }
+            }
+            HorizontalLayout {
+                x: 176px;
+                width: 180px;
+                y: root.grid-height + 25px + 16px - 34px + 32px + 6px;
+                height: 35px;
+                spacing: 8px;
+                SettingsButton {
+                    horizontal-stretch: 1;
+                    text: root.default-text;
+                    padding-x: 20px;
+                    padding-y: 8px;
+                    clicked => { root.default-clicked(); }
+                }
+                SettingsButton {
+                    horizontal-stretch: 1;
+                    text: root.reset-text;
+                    padding-x: 20px;
+                    padding-y: 8px;
+                    clicked => { root.reset-clicked(); }
+                }
+            }
+        }
+    }
+}

@@ -1,0 +1,21 @@
+[package]
+name = "vtadn_audio"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vtadn_model.workspace = true
+vtadn_sessions.workspace = true
+vtadn_native.workspace = true
+tadn_common.workspace = true
+log.workspace = true
+# `Win32_System_Power`: suspend/resume notification for the resume device-list recovery
+# (C# `SystemEvents.PowerModeChanged`).
+windows = { workspace = true, features = ["Win32_System_Power"] }
+windows-core.workspace = true
+
+[lints]
+workspace = true

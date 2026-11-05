@@ -1,0 +1,1209 @@
+// Shared settings-window controls (port of TrayAppDotNETCommon UI/Controls/SettingsUI.cs, Cards.cs,
+// SettingsSearchBox.cs, SettingsSidebar.cs, SettingsSidebarResizeHandle.cs, CommonBindings.cs).
+// Metrics follow SettingsUI.axaml / Cards.axaml / CommonBindings.axaml; colors are Theme slots.
+
+import { Theme } from "../theme.slint";
+
+// --- Typography (TrayAppDotNETSettingsUI.Text/TitleText/DescriptionText/SectionHeader) -------------
+
+export component SectionHeaderText inherits Text {
+    font-family: Theme.ui-font;
+    font-size: 22px;
+    font-weight: 600;
+    color: Theme.foreground;
+    wrap: word-wrap;
+}
+
+export component SubsectionHeaderText inherits Text {
+    font-family: Theme.ui-font;
+    font-size: 14px;
+    font-weight: 600;
+    color: Theme.foreground;
+    wrap: word-wrap;
+}
+
+export component TitleText inherits Text {
+    font-family: Theme.ui-font;
+    font-size: 14px;
+    color: Theme.foreground;
+    wrap: word-wrap;
+}
+
+// 12px SecondaryForeground at opacity 0.8 (the C# default margin 0,2,8,0 is applied by the caller).
+export component DescriptionText inherits Text {
+    font-family: Theme.ui-font;
+    font-size: 12px;
+    color: Theme.secondary-foreground;
+    opacity: 0.8;
+    wrap: word-wrap;
+}
+
+// --- Tooltips -------------------------------------------------------------------------------------
+
+// One tooltip per window: TooltipHost (placed last in the window) draws it, Tip elements request it.
+export global SettingsTooltip {
+    in-out property <string> text;
+    in-out property <bool> visible;
+    // Anchor rectangle in window coordinates.
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+    in-out property <int> owner;
+    in-out property <int> next-owner: 1;
+}
+
+// Place inside an element (fills it) and bind `hovered` to that element's hover state. Shows after
+// Theme.tooltip-delay above the element (4px gap), hides on leave or press.
+export component Tip {
+    in property <string> text;
+    in property <bool> hovered;
+    in property <bool> suppressed;
+    private property <int> id: 0;
+    private property <bool> armed: root.hovered && !root.suppressed && root.text != "";
+
+    init => {
+        root.id = SettingsTooltip.next-owner;
+        SettingsTooltip.next-owner += 1;
+    }
+
+    changed armed => {
+        if (!root.armed && SettingsTooltip.owner == root.id) {
+            SettingsTooltip.visible = false;
+        }
+    }
+
+    Timer {
+        interval: max(1ms, Theme.tooltip-delay);
+        running: root.armed && !(SettingsTooltip.visible && SettingsTooltip.owner == root.id);
+        triggered => {
+            SettingsTooltip.owner = root.id;
+            SettingsTooltip.text = root.text;
+            SettingsTooltip.anchor-x = root.absolute-position.x;
+            SettingsTooltip.anchor-y = root.absolute-position.y;
+            SettingsTooltip.anchor-width = root.width;
+            SettingsTooltip.anchor-height = root.height;
+            SettingsTooltip.visible = true;
+        }
+    }
+}
+
+// Draws the requested tooltip. Size it to the window.
+export component TooltipHost inherits Rectangle {
+    if SettingsTooltip.visible: Rectangle {
+        property <length> above-y: SettingsTooltip.anchor-y - self.height - 4px;
+        width: min(measure.preferred-width + 16px, 360px);
+        height: tip-layout.preferred-height;
+        x: max(4px, min(root.width - self.width - 4px, SettingsTooltip.anchor-x + (SettingsTooltip.anchor-width - self.width) / 2));
+        y: self.above-y >= 0 ? self.above-y : SettingsTooltip.anchor-y + SettingsTooltip.anchor-height + 4px;
+        background: Theme.background;
+        border-color: Theme.border;
+        border-width: 1px;
+        border-radius: Theme.control-corner-radius;
+
+        measure := Text {
+            visible: false;
+            text: SettingsTooltip.text;
+            font-family: Theme.ui-font;
+            font-size: 12px;
+        }
+        tip-layout := VerticalLayout {
+            padding-left: 8px;
+            padding-right: 8px;
+            padding-top: 5px;
+            padding-bottom: 5px;
+            Text {
+                text: SettingsTooltip.text;
+                font-family: Theme.ui-font;
+                font-size: 12px;
+                color: Theme.foreground;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// --- Keyboard planes (ControlMap SettingsShell: Sidebar Tab=Cycle, Content) ------------------------
+
+// Tab cycles inside one plane: while the page holds focus only page controls (plane 2) are tab
+// stops, while the sidebar holds it only sidebar controls (plane 1). Plane 0 controls (dialogs,
+// the color picker) are always tab stops.
+export global SettingsFocus {
+    in-out property <bool> page-plane;
+    // Focus rings follow `:focus-visible` (ControlMapFocusVisual): they appear once focus moves by
+    // keyboard navigation and hide again on the next pointer press.
+    in-out property <bool> keyboard-visible;
+
+    // Keys that move focus: they make focus rings visible.
+    public pure function is-navigation-key(text: string) -> bool {
+        return text == Key.Tab || text == Key.Backtab || text == Key.UpArrow || text == Key.DownArrow
+            || text == Key.LeftArrow || text == Key.RightArrow || text == Key.Home || text == Key.End
+            || text == Key.PageUp || text == Key.PageDown;
+    }
+}
+
+// --- Focus ring (ControlMapFocusVisual: 2px black outside 1px white, outset 3px) ------------------
+
+export component FocusRing inherits Rectangle {
+    in property <bool> show;
+    in property <length> radius: 4px;
+    visible: root.show && SettingsFocus.keyboard-visible;
+    border-radius: root.radius + 3px;
+    border-width: 2px;
+    border-color: #000000;
+    Rectangle {
+        x: 2px;
+        y: 2px;
+        width: parent.width - 4px;
+        height: parent.height - 4px;
+        border-radius: root.radius + 1px;
+        border-width: 1px;
+        border-color: #FFFFFF;
+    }
+}
+
+// --- Buttons (SettingsButton: ControlBackground/Hover/Pressed, R(4), min height 32, padding 12,6) --
+
+export component SettingsButton inherits Rectangle {
+    in property <string> text;
+    in property <string> glyph;
+    in property <length> glyph-size: 10px;
+    in property <bool> enabled: true;
+    in property <string> tooltip;
+    in property <length> padding-x: 12px;
+    in property <length> padding-y: 6px;
+    in property <length> min-button-width: 0px;
+    in property <length> min-button-height: 32px;
+    public function focus-button() { focus.focus(); }
+    in property <bool> deep: false;
+    callback clicked();
+    in property <int> plane: 0;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { focus.focus(); }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    min-width: max(root.min-button-width, label.preferred-width + 2 * root.padding-x);
+    min-height: root.min-button-height;
+    preferred-height: max(root.min-button-height, label.preferred-height + 2 * root.padding-y);
+    border-radius: Theme.control-corner-radius;
+    background: touch.pressed ? (root.deep ? Theme.pressed-deep : Theme.pressed)
+        : touch.has-hover ? (root.deep ? Theme.hover-deep : Theme.hover)
+        : (root.deep ? Theme.control-background-deep : Theme.control-background);
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button;
+    accessible-label: root.text != "" ? root.text : root.tooltip;
+    accessible-action-default => { if (root.enabled) { root.clicked(); } }
+
+    label := Text {
+        text: root.text != "" ? root.text : root.glyph;
+        font-family: root.text != "" ? Theme.ui-font : Theme.icon-font;
+        font-size: root.text != "" ? 14px : root.glyph-size;
+        color: Theme.foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        clicked => { SettingsFocus.keyboard-visible = false; focus.focus(); root.clicked(); }
+    }
+
+    focus := FocusScope {
+        focus-on-tab-navigation: root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane);
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            root.note-focus();
+        }
+        enabled: root.enabled;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Tip {
+        text: root.tooltip;
+        hovered: touch.has-hover;
+        suppressed: touch.pressed;
+    }
+
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: focus.has-focus;
+        radius: Theme.control-corner-radius;
+    }
+}
+
+// --- Toggle (SettingsToggle: 40x20 track, R10 fixed) --------------------------------------------
+
+export component SettingsToggle inherits Rectangle {
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    in property <string> tooltip;
+    callback toggled(bool);
+    in property <int> plane: 0;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { focus.focus(); }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    width: 40px;
+    height: 20px;
+    border-radius: 10px;
+    border-width: 1px;
+    border-color: root.checked ? Theme.toggle-switch-on-track : Theme.foreground;
+    background: root.checked ? Theme.toggle-switch-on-track : transparent;
+    opacity: root.enabled ? 1 : 0.45;
+    accessible-role: switch;
+    accessible-checked: root.checked;
+    accessible-checkable: true;
+    accessible-action-default => { if (root.enabled) { root.toggled(!root.checked); } }
+
+    private property <length> thumb-size: root.checked ? (touch.has-hover ? 12px : 14px) : (touch.has-hover ? 12px : 10px);
+    Rectangle {
+        width: root.thumb-size;
+        height: root.thumb-size;
+        border-radius: self.width / 2;
+        background: root.checked ? Theme.toggle-switch-on-thumb : Theme.foreground;
+        x: root.checked ? root.width - 3px - self.width : 5px;
+        y: (root.height - self.height) / 2;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                SettingsFocus.keyboard-visible = false;
+                focus.focus();
+                root.toggled(!root.checked);
+            }
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-tab-navigation: root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane);
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            root.note-focus();
+        }
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.toggled(!root.checked);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Tip {
+        text: root.tooltip;
+        hovered: touch.has-hover;
+    }
+
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: focus.has-focus;
+        radius: 10px;
+    }
+}
+
+// --- Number box (SettingsNumberBox) ---------------------------------------------------------------
+
+export component NumberBox {
+    in property <int> value;
+    in property <int> minimum;
+    in property <int> maximum: 100;
+    in property <string> suffix;
+    in property <bool> enabled: true;
+    callback committed(int);
+    in property <int> plane: 0;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { root.take-focus(); }
+    function take-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        input.focus();
+    }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    private property <int> focus-start-value;
+    private property <float> wheel-accumulator;
+
+    min-width: max(100px, ceil((input-measure.preferred-width + 8px + (root.suffix != "" ? suffix-measure.preferred-width + 10px : 0px) + 22px + 32px) / 1px) * 1px);
+    height: 32px;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: spinbox;
+    accessible-value: root.value;
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+
+    // Width measurement only.
+    input-measure := Text {
+        visible: false;
+        text: input.text;
+        font-family: Theme.ui-font;
+        font-size: 14px;
+    }
+    suffix-measure := Text {
+        visible: false;
+        text: root.suffix;
+        font-family: Theme.ui-font;
+        font-size: 13px;
+    }
+
+    function clamp-value(v: int) -> int {
+        return max(root.minimum, min(root.maximum, v));
+    }
+
+    function commit-text() {
+        if (input.text.is-empty) {
+            input.text = root.value;
+            return;
+        }
+        if (!input.text.is-float()) {
+            input.text = root.value;
+            return;
+        }
+        // Normalize: round half away from zero, clamp.
+        let parsed = input.text.to-float();
+        let rounded = parsed >= 0 ? floor(parsed + 0.5) : -floor(-parsed + 0.5);
+        let v = root.clamp-value(rounded);
+        input.text = v;
+        if (v != root.value) {
+            root.committed(v);
+        }
+    }
+
+    function step-by(delta: int) {
+        let base = input.text.is-float() ? round(input.text.to-float()) : (delta > 0 ? root.minimum : root.maximum);
+        let v = root.clamp-value(input.text.is-float() ? base + delta : base);
+        input.text = v;
+        if (v != root.value) {
+            root.committed(v);
+        }
+    }
+
+    function step-for(control: bool, shift: bool) -> int {
+        return control ? (shift ? 100 : 10) : 1;
+    }
+
+    changed value => {
+        input.text = root.value;
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        box := Rectangle {
+            horizontal-stretch: 1;
+            border-radius: 4px;
+            background: input.has-focus ? Theme.text-box-focused : box-touch.has-hover ? Theme.hover : Theme.control-background;
+
+            box-touch := TouchArea {
+                enabled: root.enabled;
+                mouse-cursor: MouseCursor.text;
+                clicked => { root.take-focus(); }
+                scroll-event(event) => {
+                    if (!input.has-focus || event.delta-y == 0) {
+                        return reject;
+                    }
+                    root.wheel-accumulator += event.delta-y / 120px;
+                    if (abs(root.wheel-accumulator) >= 1) {
+                        let notches = root.wheel-accumulator > 0 ? floor(root.wheel-accumulator) : -floor(-root.wheel-accumulator);
+                        root.wheel-accumulator -= notches;
+                        root.step-by(notches * root.step-for(event.modifiers.control, event.modifiers.shift));
+                    }
+                    accept
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 2px;
+                input := TextInput {
+                    horizontal-stretch: 1;
+                    text: root.value;
+                    // Out of Tab order while the other plane holds focus.
+                    enabled: root.enabled && (self.has-focus || (root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane)));
+                    input-type: number;
+                    single-line: true;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-family: Theme.ui-font;
+                    font-size: 14px;
+                    color: Theme.foreground;
+                    selection-background-color: Theme.text-selection;
+                    selection-foreground-color: Theme.foreground;
+                    accepted => {
+                        root.commit-text();
+                        self.clear-focus();
+                    }
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            root.focus-start-value = root.value;
+                            root.note-focus();
+                        } else {
+                            root.commit-text();
+                        }
+                    }
+                    key-pressed(event) => {
+                        if (event.text == Key.UpArrow) {
+                            root.step-by(root.step-for(event.modifiers.control, event.modifiers.shift));
+                            return accept;
+                        }
+                        if (event.text == Key.DownArrow) {
+                            root.step-by(-root.step-for(event.modifiers.control, event.modifiers.shift));
+                            return accept;
+                        }
+                        if (event.text == Key.Escape) {
+                            input.text = root.focus-start-value;
+                            if (root.focus-start-value != root.value) {
+                                root.committed(root.focus-start-value);
+                            }
+                            self.select-all();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+                // NumberTextPadding right (2) + NumberSuffixMargin left (2).
+                if root.suffix != "": Rectangle {
+                    width: 4px;
+                }
+                if root.suffix != "": Text {
+                    horizontal-stretch: 0;
+                    text: root.suffix;
+                    font-family: Theme.ui-font;
+                    font-size: 13px;
+                    color: Theme.foreground;
+                    vertical-alignment: center;
+                }
+                if root.suffix != "": Rectangle {
+                    width: 8px;
+                }
+            }
+        }
+
+        VerticalLayout {
+            width: 22px;
+            alignment: center;
+            up := Rectangle {
+                height: 16px;
+                border-radius: 2px;
+                background: up-touch.pressed ? Theme.pressed : up-touch.has-hover ? Theme.hover : transparent;
+                Text {
+                    text: "\u{E70E}";
+                    font-family: Theme.icon-font;
+                    font-size: 8px;
+                    color: Theme.foreground;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                up-touch := TouchArea {
+                    enabled: root.enabled;
+                    clicked => { root.step-by(1); }
+                }
+            }
+            down := Rectangle {
+                height: 16px;
+                border-radius: 2px;
+                background: down-touch.pressed ? Theme.pressed : down-touch.has-hover ? Theme.hover : transparent;
+                Text {
+                    text: "\u{E70D}";
+                    font-family: Theme.icon-font;
+                    font-size: 8px;
+                    color: Theme.foreground;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+                down-touch := TouchArea {
+                    enabled: root.enabled;
+                    clicked => { root.step-by(-1); }
+                }
+            }
+        }
+    }
+}
+
+// --- Combo box (SettingsComboBox) -----------------------------------------------------------------
+
+// One entry. Slider-thumb previews use the glyph fields; plain entries leave them empty.
+export struct ComboOption {
+    text: string,
+    glyph: string,
+    glyph-font: string,
+    glyph-size: length,
+    preview-width: length,
+    preview-height: length,
+    x-scale: float,
+    capsule: bool,
+}
+
+component ComboPreview {
+    in property <ComboOption> option;
+    width: 22px;
+    if root.option.capsule: Rectangle {
+        width: max(1px, root.option.preview-width);
+        height: max(1px, root.option.preview-height);
+        border-radius: self.height / 2;
+        background: Theme.foreground;
+    }
+    if !root.option.capsule: Text {
+        text: root.option.glyph;
+        font-family: root.option.glyph-font;
+        font-size: max(1px, root.option.glyph-size);
+        color: Theme.foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        transform-scale-x: root.option.x-scale;
+    }
+}
+
+export component SettingsComboBox {
+    in property <[ComboOption]> options;
+    in property <int> selected;
+    in property <bool> enabled: true;
+    // 0 = autosize to the selected item (StringComboCard); otherwise a fixed width.
+    in property <length> fixed-width: 0px;
+    in property <bool> show-previews: false;
+    in property <string> placeholder;
+    callback selection-changed(int);
+    in property <int> plane: 0;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { focus.focus(); }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    private property <string> selected-text: root.selected >= 0 && root.selected < root.options.length ? root.options[root.selected].text : root.placeholder;
+    private property <int> focused-item: -1;
+
+    width: root.fixed-width > 0 ? root.fixed-width : ceil(max(153px, measure.preferred-width + (root.show-previews ? 32px : 0px) + 12px + 12px + 36px + 4px) / 1px) * 1px;
+    height: 32px;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: combobox;
+    accessible-value: root.selected-text;
+
+    measure := Text {
+        visible: false;
+        text: root.selected-text;
+        font-family: Theme.ui-font;
+        font-size: 14px;
+    }
+
+    function open() {
+        root.focused-item = root.selected;
+        popup.show();
+    }
+
+    function commit(index: int) {
+        popup.close();
+        if (index >= 0 && index != root.selected) {
+            root.selection-changed(index);
+        }
+    }
+
+    frame := Rectangle {
+        border-radius: 4px;
+        background: touch.pressed || popup.is-open ? Theme.pressed : touch.has-hover ? Theme.hover : Theme.control-background;
+
+        HorizontalLayout {
+            padding-left: 12px;
+            spacing: 0px;
+            if root.show-previews && root.selected >= 0 && root.selected < root.options.length: HorizontalLayout {
+                padding-right: 10px;
+                ComboPreview {
+                    option: root.options[root.selected];
+                }
+            }
+            Text {
+                horizontal-stretch: 1;
+                text: root.selected-text;
+                font-family: Theme.ui-font;
+                font-size: 14px;
+                color: Theme.foreground;
+                vertical-alignment: center;
+                overflow: elide;
+            }
+            Rectangle {
+                width: 12px;
+            }
+            Text {
+                width: 36px;
+                text: "\u{E70D}";
+                font-family: Theme.icon-font;
+                font-size: 10px;
+                color: Theme.foreground;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+
+        touch := TouchArea {
+            enabled: root.enabled;
+            mouse-cursor: MouseCursor.pointer;
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                    SettingsFocus.keyboard-visible = false;
+                    focus.focus();
+                    if (popup.is-open) {
+                        popup.close();
+                    } else {
+                        root.open();
+                    }
+                }
+            }
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-tab-navigation: root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane);
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            root.note-focus();
+        }
+        enabled: root.enabled;
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (popup.is-open) {
+                if (event.text == Key.Escape || event.text == Key.Tab) {
+                    popup.close();
+                    return event.text == Key.Tab ? reject : accept;
+                }
+                if (event.text == Key.UpArrow) {
+                    root.focused-item = max(0, root.focused-item - 1);
+                    return accept;
+                }
+                if (event.text == Key.DownArrow) {
+                    root.focused-item = min(root.options.length - 1, root.focused-item + 1);
+                    return accept;
+                }
+                if (event.text == Key.Home) {
+                    root.focused-item = 0;
+                    return accept;
+                }
+                if (event.text == Key.End) {
+                    root.focused-item = root.options.length - 1;
+                    return accept;
+                }
+                if (event.text == Key.Return || event.text == " ") {
+                    root.commit(root.focused-item);
+                    return accept;
+                }
+                return accept;
+            }
+            if ((event.text == Key.Return || event.text == " " || event.text == Key.DownArrow)
+                && !event.modifiers.control && !event.modifiers.shift && !event.modifiers.meta) {
+                root.open();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: focus.has-focus && !popup.is-open;
+        radius: 4px;
+    }
+
+    popup := PopupWindow {
+        x: 0px;
+        y: root.height + 4px;
+        width: max(153px, root.width, list-layout.preferred-width);
+        height: min(320px, list-layout.preferred-height + 8px);
+
+        Rectangle {
+            background: Theme.background;
+            border-color: Theme.border;
+            border-width: 1px;
+            border-radius: 6px;
+            clip: true;
+
+            Flickable {
+                y: 4px;
+                height: parent.height - 8px;
+                content-height: list-layout.preferred-height;
+                list-layout := VerticalLayout {
+                    for option[index] in root.options: Rectangle {
+                        height: item-layout.preferred-height + 4px;
+                        item-touch := TouchArea {
+                            mouse-cursor: MouseCursor.pointer;
+                            pointer-event(event) => {
+                                if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                    root.commit(index);
+                                }
+                            }
+                        }
+                        Rectangle {
+                            x: 4px;
+                            y: 2px;
+                            width: parent.width - 8px;
+                            height: parent.height - 4px;
+                            border-radius: 4px;
+                            background: item-touch.has-hover || index == root.selected || index == root.focused-item ? Theme.hover : transparent;
+                            item-layout := HorizontalLayout {
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 8px;
+                                padding-bottom: 8px;
+                                spacing: 8px;
+                                Rectangle {
+                                    width: 3px;
+                                    Rectangle {
+                                        width: 3px;
+                                        height: 16px;
+                                        border-radius: 1.5px;
+                                        background: index == root.selected ? Theme.accent : transparent;
+                                    }
+                                }
+                                if root.show-previews: ComboPreview {
+                                    option: option;
+                                }
+                                Text {
+                                    text: option.text;
+                                    font-family: Theme.ui-font;
+                                    font-size: 14px;
+                                    color: Theme.foreground;
+                                    vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// --- Color swatch (SettingsSwatch: 32x28, radius 4 fixed, 1px Border, Accent on hover) ------------
+
+export component ColorSwatch inherits Rectangle {
+    in property <color> swatch-color;
+    in property <bool> unset;
+    in property <string> tooltip;
+    callback clicked();
+    in property <int> plane: 0;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { focus.focus(); }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    width: 32px;
+    height: 28px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: touch.has-hover ? Theme.accent : Theme.border;
+    accessible-role: button;
+    accessible-label: root.tooltip;
+
+    Rectangle {
+        x: 1px;
+        y: 1px;
+        width: parent.width - 2px;
+        height: parent.height - 2px;
+        border-radius: 3px;
+        background: root.swatch-color;
+        opacity: root.unset ? 0.35 : 1;
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                SettingsFocus.keyboard-visible = false;
+                focus.focus();
+                root.clicked();
+            }
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-tab-navigation: root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane);
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            root.note-focus();
+        }
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+
+    Tip {
+        text: root.tooltip;
+        hovered: touch.has-hover;
+    }
+
+    FocusRing {
+        x: -3px;
+        y: -3px;
+        width: parent.width + 6px;
+        height: parent.height + 6px;
+        show: focus.has-focus;
+        radius: 4px;
+    }
+}
+
+// --- Card shell (TrayAppDotNETSettingsCards.Card: CardBackground, R(6), padding 16,12, gap 6) ----
+
+export component Card inherits Rectangle {
+    in property <bool> card-enabled: true;
+    in property <bool> highlighted;
+    background: Theme.card-background;
+    border-radius: Theme.rounded-corners ? 6px : 0px;
+    opacity: root.card-enabled ? 1 : 0.45;
+    border-width: root.highlighted ? 2px : 0px;
+    border-color: Theme.accent;
+    animate border-width { duration: Theme.animations ? 200ms : 0ms; }
+}
+
+// --- Sidebar navigation row (SettingsNavItem) -----------------------------------------------------
+
+export component NavItem {
+    in property <string> label;
+    in property <string> glyph;
+    in property <bool> selected;
+    in property <bool> windows11;
+    callback activated();
+    in property <int> plane: 1;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { focus.focus(); }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+    callback open-page();
+    callback move-focus(int);
+    out property <bool> has-focus: focus.has-focus;
+    public function focus-row() { focus.focus(); }
+
+    min-height: 43px;
+    accessible-role: tab;
+    accessible-label: root.label;
+    accessible-item-selected: root.selected;
+
+    highlight := Rectangle {
+        x: 4px;
+        y: 2px;
+        width: parent.width - 8px;
+        height: parent.height - 4px;
+        border-radius: Theme.rounded-corners ? 4px : 0px;
+        background: root.selected || touch.has-hover ? Theme.hover : transparent;
+
+        // Classic: bar 12px in, label after an 8px gap. Windows 11: bar flush left, glyph, label.
+        Rectangle {
+            x: root.windows11 ? 0px : 12px;
+            width: 3px;
+            height: 16px;
+            border-radius: Theme.rounded-corners ? 1.5px : 0px;
+            background: !root.selected ? transparent : root.windows11 ? #A6A5A1 : Theme.foreground;
+        }
+        if root.windows11: Text {
+            x: 12px;
+            y: (parent.height - self.height) / 2 + 2px;
+            width: 20px;
+            height: 20px;
+            text: root.glyph;
+            font-family: Theme.icon-font;
+            font-size: 17px;
+            color: Theme.foreground;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        Text {
+            x: root.windows11 ? 44px : 23px;
+            width: parent.width - self.x - 8px;
+            text: root.label;
+            font-family: Theme.ui-font;
+            font-size: 14px;
+            color: Theme.foreground;
+            vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                SettingsFocus.keyboard-visible = false;
+                focus.focus();
+                root.activated();
+            }
+        }
+    }
+
+    focus := FocusScope {
+        focus-on-tab-navigation: root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane);
+        focus-gained(reason) => {
+            if (reason == FocusReason.tab-navigation) {
+                SettingsFocus.keyboard-visible = true;
+            }
+            root.note-focus();
+        }
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return) {
+                root.activated();
+                return accept;
+            }
+            if ((event.text == " " || event.text == Key.RightArrow) && !event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift) {
+                root.open-page();
+                return accept;
+            }
+            if (event.text == Key.UpArrow) {
+                root.move-focus(-1);
+                return accept;
+            }
+            if (event.text == Key.DownArrow) {
+                root.move-focus(1);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    FocusRing {
+        x: highlight.x - 3px;
+        y: highlight.y - 3px;
+        width: highlight.width + 6px;
+        height: highlight.height + 6px;
+        show: focus.has-focus;
+        radius: Theme.rounded-corners ? 4px : 0px;
+    }
+}
+
+// --- Sidebar search box (SettingsSearchBox) -------------------------------------------------------
+
+export component SearchBox {
+    in property <string> placeholder;
+    in-out property <string> text <=> input.text;
+    callback edited(string);
+    callback enter-pressed();
+    public function focus-box() { root.take-focus(); }
+    in property <int> plane: 1;
+    in property <bool> tab-enabled: true;
+    // Incremented by the owner to move keyboard focus here.
+    in property <int> focus-request;
+    callback got-focus();
+    changed focus-request => { root.take-focus(); }
+    function take-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        input.focus();
+    }
+    function note-focus() {
+        if (root.plane != 0) {
+            SettingsFocus.page-plane = root.plane == 2;
+        }
+        root.got-focus();
+    }
+
+    height: 32px;
+
+    HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            horizontal-stretch: 1;
+            border-radius: 3px;
+            background: input.has-focus ? Theme.pressed-deep : touch.has-hover ? Theme.hover-deep : Theme.control-background-deep;
+            touch := TouchArea {
+                mouse-cursor: MouseCursor.text;
+                clicked => { root.take-focus(); }
+            }
+            HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 4px;
+                input := TextInput {
+                    enabled: (self.has-focus || (root.tab-enabled && (root.plane == 0 || (root.plane == 2) == SettingsFocus.page-plane)));
+                    single-line: true;
+                    changed has-focus => {
+                        if (self.has-focus) {
+                            root.note-focus();
+                        }
+                    }
+                    vertical-alignment: center;
+                    font-family: Theme.ui-font;
+                    font-size: 14px;
+                    color: Theme.foreground;
+                    selection-background-color: Theme.text-selection;
+                    selection-foreground-color: Theme.foreground;
+                    edited => { root.edited(self.text); }
+                    key-pressed(event) => {
+                        if (self.text != "" && event.text == Key.Escape) {
+                            self.text = "";
+                            root.edited("");
+                            return accept;
+                        }
+                        if (self.text != "" && event.text == Key.Return) {
+                            root.enter-pressed();
+                            return accept;
+                        }
+                        reject
+                    }
+                }
+            }
+            if input.text == "": Text {
+                x: 4px;
+                text: root.placeholder;
+                font-family: Theme.ui-font;
+                font-size: 14px;
+                color: Theme.disabled-foreground;
+                vertical-alignment: center;
+            }
+        }
+        if input.text != "": Rectangle {
+            width: 32px;
+            border-radius: 4px;
+            background: clear-touch.pressed ? Theme.pressed-deep : clear-touch.has-hover ? Theme.hover-deep : Theme.control-background-deep;
+            Text {
+                text: "\u{E653}";
+                font-family: Theme.icon-font;
+                font-size: 10px;
+                color: Theme.foreground;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+            clear-touch := TouchArea {
+                mouse-cursor: MouseCursor.pointer;
+                clicked => {
+                    input.text = "";
+                    root.edited("");
+                    root.take-focus();
+                }
+            }
+        }
+    }
+}
+
+// --- Painted scroll bar (SettingsScrollBar, vertical) ---------------------------------------------
+
+export component ScrollBar {
+    // Flickable geometry: viewport (visible) height, content height, content-y (<= 0).
+    in property <length> visible-height;
+    in property <length> content-height;
+    in-out property <length> content-y;
+    callback context-menu(length, length);
+
+    private property <length> max-offset: max(0px, root.content-height - root.visible-height);
+    private property <bool> scrollable: root.max-offset > 0.5px;
+    private property <length> thumb-length: max(24px, root.scrollable ? root.height * root.visible-height / root.content-height : root.height);
+    private property <length> thumb-y: root.scrollable ? (root.height - root.thumb-length) * (-root.content-y / root.max-offset) : 0px;
+    private property <length> grab-offset;
+    private property <bool> dragging;
+
+    width: 16.5px;
+    visible: root.scrollable;
+
+    function set-from-thumb-top(top: length) {
+        let range = root.height - root.thumb-length;
+        if (range > 0) {
+            root.content-y = -max(0px, min(root.max-offset, top / range * root.max-offset));
+        }
+    }
+
+    thumb := Rectangle {
+        property <bool> wide: touch.has-hover || root.dragging;
+        x: self.wide ? -1.5px : 8.5px;
+        width: self.wide ? 14px : 4px;
+        y: root.thumb-y;
+        height: root.thumb-length;
+        border-radius: self.width / 2;
+        background: root.dragging ? Theme.slider-progress : Theme.slider-progress.with-alpha(self.wide ? 217 / 255 : 140 / 255);
+    }
+
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                if (self.mouse-y >= root.thumb-y && self.mouse-y <= root.thumb-y + root.thumb-length) {
+                    root.grab-offset = self.mouse-y - root.thumb-y;
+                } else {
+                    root.grab-offset = root.thumb-length / 2;
+                    root.set-from-thumb-top(self.mouse-y - root.grab-offset);
+                }
+                root.dragging = true;
+            } else if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                root.dragging = false;
+            } else if (event.button == PointerEventButton.right && event.kind == PointerEventKind.up) {
+                root.context-menu(self.mouse-x, self.mouse-y);
+            }
+        }
+        moved => {
+            if (root.dragging && self.pressed) {
+                root.set-from-thumb-top(self.mouse-y - root.grab-offset);
+            }
+        }
+    }
+}

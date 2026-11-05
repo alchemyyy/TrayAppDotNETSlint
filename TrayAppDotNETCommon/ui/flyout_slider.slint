@@ -1,0 +1,271 @@
+// Shared flyout volume slider (port of TrayAppDotNETCommon/src/UI/Controls/FlyoutSlider.cs).
+//
+// Controlled control: the host owns `value` and updates it from `edited(value)`. A programmatic
+// `value` change never raises `edited`. Geometry follows FlyoutSlider.Render exactly:
+//   track (0, trackY, w, 4) r2 -> progress min(w, w*norm) -> stereo peak bar -> base peak bar
+//   (peaks never pass the volume extent: min(extent, (extent + 2) * peak)) -> thumb at
+//   (w - thumbW) * norm. Height is max(4 + 2 * hit-padding, thumb height).
+// Input: left press jumps to the point and starts a drag (`drag-started`), moves follow, release
+// sets once more then `drag-completed`; a cancelled press ends the drag without a final set.
+// Vertical wheel is consumed (horizontal passes through) and accumulates fractional notches
+// (WheelStepAccumulator) into `wheel-step` steps; leaving the control drops a partial step. Keys
+// when focused: Up/Right +1, Down/Left -1, PageUp +10, PageDown -10, Home min, End max.
+
+import { Theme } from "theme.slint";
+
+export enum SliderThumbShape { capsule, glyph }
+
+// `SliderThumbGlyphOption`: Capsule is a 10x22 rounded rect; glyph thumbs draw an icon-font glyph
+// centred in width x height, scaled horizontally by x-scale.
+export struct SliderThumb {
+    shape: SliderThumbShape,
+    glyph: string,
+    font-family: string,
+    font-size: length,
+    width: length,
+    height: length,
+    x-scale: float,
+}
+
+// Keyboard focus ring (FocusVisual): 2px #000 outside a 1px #FFF ring, outset 3px.
+// Place it with the geometry of the focused element (it fills its parent by default).
+export component FocusRing {
+    in property <length> radius: 0px;
+    Rectangle {
+        x: -3px;
+        y: -3px;
+        width: root.width + 6px;
+        height: root.height + 6px;
+        border-width: 2px;
+        border-color: #000000;
+        border-radius: root.radius + 3px;
+        Rectangle {
+            x: 2px;
+            y: 2px;
+            width: parent.width - 4px;
+            height: parent.height - 4px;
+            border-width: 1px;
+            border-color: #FFFFFF;
+            border-radius: max(0px, root.radius + 1px);
+        }
+    }
+}
+
+export component FlyoutSlider inherits FocusScope {
+    in property <float> value: 0;
+    in property <float> minimum: 0;
+    in property <float> maximum: 100;
+    // Meter peaks as fractions 0..1 of the volume extent (min = base bar, max = stereo bar).
+    in property <float> peak-min: 0;
+    in property <float> peak-max: 0;
+    in property <SliderThumb> thumb: {
+        shape: SliderThumbShape.capsule,
+        glyph: "",
+        font-family: "Segoe Fluent Icons",
+        font-size: 18px,
+        width: 10px,
+        height: 22px,
+        x-scale: 1,
+    };
+    in property <float> wheel-step: 1;
+    in property <float> keyboard-step: 1;
+    in property <float> large-keyboard-step: 10;
+    in property <length> hit-padding: 14px;
+    in property <color> track-color: Theme.slider-track;
+    in property <color> progress-color: Theme.slider-progress;
+    in property <color> thumb-color: Theme.slider-thumb;
+    in property <color> meter-peak-color: #FFFFFF;
+    in property <color> meter-peak-stereo-color: #FFFFFF80;
+    in property <bool> input-enabled: true;
+    out property <bool> dragging: false;
+    out property <bool> keyboard-focused: false;
+
+    // A user change: already clamped and at least 0.001 away from `value`.
+    callback edited(float);
+    callback drag-started();
+    callback drag-completed();
+
+    property <float> wheel-pending: 0;
+    property <float> norm: clamp((root.value - root.minimum) / max(0.001, root.maximum - root.minimum), 0, 1);
+    property <length> track-height: 4px;
+    property <length> track-y: (root.height - root.track-height) / 2;
+    property <length> extent: root.width * root.norm;
+    property <length> peak-radius: 2px;
+
+    min-height: max(root.track-height + 2 * root.hit-padding, root.thumb.height);
+    preferred-height: self.min-height;
+    max-height: self.min-height;
+    min-width: root.thumb.width;
+    preferred-width: 180px;
+    accessible-role: slider;
+    accessible-value: round(root.value);
+    accessible-value-minimum: root.minimum;
+    accessible-value-maximum: root.maximum;
+    accessible-value-step: root.keyboard-step;
+
+    function adjust(requested: float) {
+        let next = clamp(requested, root.minimum, root.maximum);
+        if (abs(next - root.value) >= 0.001) {
+            root.edited(next);
+        }
+    }
+
+    function set-from-point(x: length) {
+        let fraction = clamp((x - root.thumb.width / 2) / max(1px, root.width - root.thumb.width), 0, 1);
+        root.adjust(root.minimum + fraction * (root.maximum - root.minimum));
+    }
+
+    function end-drag() {
+        if (root.dragging) {
+            root.dragging = false;
+            root.drag-completed();
+        }
+    }
+
+    function peak-width(peak: float) -> length {
+        return max(0px, min(root.extent, (root.extent + root.peak-radius) * clamp(peak, 0, 1)));
+    }
+
+    key-pressed(event) => {
+        if (!root.input-enabled) {
+            return reject;
+        }
+        if (event.text == Key.UpArrow || event.text == Key.RightArrow) {
+            root.adjust(root.value + root.keyboard-step);
+            return accept;
+        }
+        if (event.text == Key.DownArrow || event.text == Key.LeftArrow) {
+            root.adjust(root.value - root.keyboard-step);
+            return accept;
+        }
+        if (event.text == Key.PageUp) {
+            root.adjust(root.value + root.large-keyboard-step);
+            return accept;
+        }
+        if (event.text == Key.PageDown) {
+            root.adjust(root.value - root.large-keyboard-step);
+            return accept;
+        }
+        if (event.text == Key.Home) {
+            root.adjust(root.minimum);
+            return accept;
+        }
+        if (event.text == Key.End) {
+            root.adjust(root.maximum);
+            return accept;
+        }
+        reject
+    }
+
+    focus-gained(reason) => {
+        root.keyboard-focused = reason == FocusReason.tab-navigation;
+    }
+    focus-lost(reason) => {
+        root.keyboard-focused = false;
+    }
+
+    // Track.
+    Rectangle {
+        x: 0px;
+        y: root.track-y;
+        width: root.width;
+        height: root.track-height;
+        border-radius: root.peak-radius;
+        background: root.track-color;
+    }
+
+    // Progress.
+    if root.extent > 0px: Rectangle {
+        x: 0px;
+        y: root.track-y;
+        width: min(root.width, root.extent);
+        height: root.track-height;
+        border-radius: root.peak-radius;
+        background: root.progress-color;
+    }
+
+    // Stereo peak bar, then the base bar on top (they coincide with the unified meter).
+    if root.peak-max > 0: Rectangle {
+        x: 0px;
+        y: root.track-y;
+        width: root.peak-width(root.peak-max);
+        height: root.track-height;
+        border-radius: root.peak-radius;
+        background: root.meter-peak-stereo-color;
+    }
+    if root.peak-min > 0: Rectangle {
+        x: 0px;
+        y: root.track-y;
+        width: root.peak-width(root.peak-min);
+        height: root.track-height;
+        border-radius: root.peak-radius;
+        background: root.meter-peak-color;
+    }
+
+    // Thumb.
+    thumb-rect := Rectangle {
+        x: (root.width - root.thumb.width) * root.norm;
+        y: (root.height - root.thumb.height) / 2;
+        width: root.thumb.width;
+        height: root.thumb.height;
+        border-radius: root.thumb.shape == SliderThumbShape.capsule ? min(self.width, self.height) / 2 : 0px;
+        background: root.thumb.shape == SliderThumbShape.capsule ? root.thumb-color : transparent;
+        if root.thumb.shape == SliderThumbShape.glyph: Text {
+            width: parent.width;
+            height: parent.height;
+            text: root.thumb.glyph;
+            font-family: root.thumb.font-family;
+            font-size: root.thumb.font-size;
+            color: root.thumb-color;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+            transform-scale-x: root.thumb.x-scale * 100%;
+        }
+    }
+
+    touch := TouchArea {
+        enabled: root.input-enabled;
+        changed has-hover => {
+            if (!self.has-hover) {
+                root.wheel-pending = 0;
+            }
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                root.focus();
+                root.keyboard-focused = false;
+                if (!root.dragging) {
+                    root.dragging = true;
+                    root.drag-started();
+                }
+                root.set-from-point(self.mouse-x);
+            } else if (event.kind == PointerEventKind.move && root.dragging) {
+                root.set-from-point(self.mouse-x);
+            } else if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left && root.dragging) {
+                root.set-from-point(self.mouse-x);
+                root.end-drag();
+            } else if (event.kind == PointerEventKind.cancel) {
+                root.end-drag();
+            }
+        }
+        scroll-event(event) => {
+            if (!root.input-enabled || root.wheel-step <= 0 || event.delta-y == 0) {
+                return reject;
+            }
+            // winit reports 60 logical px per notch; Avalonia's Delta.Y is 1 per notch.
+            let notches = event.delta-y / 60px;
+            if (root.wheel-pending != 0 && ((root.wheel-pending > 0) != (notches > 0))) {
+                root.wheel-pending = 0;
+            }
+            root.wheel-pending += notches;
+            let steps = root.wheel-pending >= 0 ? floor(root.wheel-pending) : ceil(root.wheel-pending);
+            root.wheel-pending -= steps;
+            if (steps != 0) {
+                root.adjust(root.value + steps * root.wheel-step);
+            }
+            accept
+        }
+    }
+
+    if root.keyboard-focused && root.has-focus: FocusRing { }
+}

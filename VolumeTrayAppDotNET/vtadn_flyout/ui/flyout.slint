@@ -1,0 +1,624 @@
+// VolumeTrayAppDotNET flyout window (port of UI/Flyout/VolumeFlyoutWindow.cs + .axaml and the
+// FlyoutFrame / FlyoutWindowCommon chrome).
+//
+// FlyoutFrame (border 1, radius 8|0) > inner (margin 1) > DockPanel { Header (top or bottom, min
+// height 36) ; Body { device list (max height = work area - header reserve), "No audio devices" } }.
+
+import { Theme } from "@tadn/theme.slint";
+import { ClickModifiers } from "@tadn/controls.slint";
+import { FocusRing, SliderThumb, SliderThumbShape } from "@tadn/flyout_slider.slint";
+import { GlyphData, MeterValue, AppRow, DeviceRow, FlyoutState, FlyoutActions, Tip } from "flyout_types.slint";
+import { IconButton, OverlayScrollBar, TooltipOverlay, TipTarget } from "flyout_controls.slint";
+import { DeviceCard } from "device_card.slint";
+
+export { Theme, GlyphData, MeterValue, AppRow, DeviceRow, FlyoutState, FlyoutActions, Tip, SliderThumb, SliderThumbShape }
+
+// Header glyphs (GlyphCatalog).
+global HeaderGlyphs {
+    out property <string> settings: "\u{E713}";
+    out property <string> sound-settings: "\u{E995}";
+    out property <string> bluetooth: "\u{E702}";
+    out property <string> communications: "\u{E77E}";
+    out property <string> undock: "\u{E75B}";
+    out property <string> redock: "\u{E75A}";
+}
+
+// HeaderIconButton: 40x32, glyph 20 (line height 26), hover and pressed = Pressed.
+component HeaderButton inherits IconButton {
+    in property <string> glyph;
+    in property <length> glyph-size: 20px;
+    in property <float> glyph-opacity: 1.0;
+    width: 40px;
+    height: 32px;
+    hover-color: Theme.pressed;
+    pressed-color: Theme.pressed;
+    Text {
+        text: root.glyph;
+        font-family: Theme.icon-font;
+        font-size: root.glyph-size;
+        color: Theme.icon-foreground;
+        opacity: root.glyph-opacity;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+// FlyoutUndockButtonController button: 40x32, glyph 20.5, hover and pressed = Pressed. A press
+// starts a gesture the controller turns into a click or a drag; Enter/Space toggle. The tooltip
+// hides while pressed.
+component UndockButton inherits Rectangle {
+    in property <bool> undocked;
+    out property <bool> focused: focus.has-focus;
+    callback pointer(int, bool);
+    callback activated();
+    property <bool> gesture: false;
+
+    public function focus-button() {
+        focus.focus();
+        focus.keyboard-focused = true;
+    }
+
+    width: 40px;
+    height: 32px;
+    border-radius: Theme.control-corner-radius;
+    background: touch.pressed || touch.has-hover ? Theme.pressed : transparent;
+    accessible-role: button;
+    accessible-label: root.undocked ? "Redock" : "Undock";
+
+    focus := FocusScope {
+        in-out property <bool> keyboard-focused: false;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focused = reason == FocusReason.tab-navigation;
+        }
+        focus-lost(reason) => {
+            self.keyboard-focused = false;
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.activated();
+                return accept;
+            }
+            reject
+        }
+    }
+    Text {
+        text: root.undocked ? HeaderGlyphs.redock : HeaderGlyphs.undock;
+        font-family: Theme.icon-font;
+        font-size: 20.5px;
+        color: Theme.icon-foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        pointer-event(event) => {
+            if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                FlyoutActions.any-press();
+                root.gesture = true;
+                root.pointer(0, true);
+            } else if (event.kind == PointerEventKind.move && root.gesture) {
+                root.pointer(1, true);
+            } else if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up && root.gesture) {
+                root.gesture = false;
+                root.pointer(2, self.mouse-x >= 0px && self.mouse-x < self.width && self.mouse-y >= 0px && self.mouse-y < self.height);
+            } else if (event.kind == PointerEventKind.cancel && root.gesture) {
+                root.gesture = false;
+                root.pointer(3, false);
+            }
+        }
+    }
+    TipTarget {
+        tip: root.undocked ? "Redock" : "Undock";
+        hovered: touch.has-hover;
+        engaged: touch.pressed;
+    }
+    if focus.has-focus && focus.keyboard-focused: FocusRing {
+        radius: Theme.control-corner-radius;
+    }
+}
+
+// Header (BuildHeader): left button stack, undock button at the right. Arrows move between the
+// buttons (ControlMap Header scope, Arrows=Horizontal).
+component FlyoutHeader inherits FocusScope {
+    in property <bool> at-bottom;
+    in property <bool> show-bluetooth-radio;
+    in property <bool> bluetooth-radio-on;
+    in property <string> bluetooth-radio-tooltip;
+    in property <bool> show-communications;
+    in property <bool> communications-active;
+    in property <string> eye-glyph;
+    in property <bool> undock-visible;
+    in property <bool> undocked;
+    callback settings-clicked();
+    callback sound-settings-clicked();
+    callback disabled-devices-clicked();
+    callback bluetooth-radio-clicked(ClickModifiers);
+    callback communications-clicked(ClickModifiers);
+    callback undock-pointer(int, bool);
+    callback undock-activated();
+    // Top: buttons at y 3 (margin 3,6 with button margin -3); bottom: centred.
+    property <length> button-y: root.at-bottom ? (36px - 32px) / 2 : 3px;
+
+    min-height: 36px;
+    max-height: 36px;
+    focus-on-click: false;
+    focus-on-tab-navigation: false;
+
+    function try-focus(index: int) -> bool {
+        if (index == 0) {
+            settings.focus-button();
+            return true;
+        }
+        if (index == 1) {
+            sound.focus-button();
+            return true;
+        }
+        if (index == 2) {
+            eye.focus-button();
+            return true;
+        }
+        if (index == 3 && root.show-bluetooth-radio) {
+            bt.focus-button();
+            return true;
+        }
+        if (index == 4 && root.show-communications) {
+            comms.focus-button();
+            return true;
+        }
+        if (index == 5 && root.undock-visible) {
+            undock.focus-button();
+            return true;
+        }
+        false
+    }
+
+    function move-focus(delta: int) {
+        let current = settings.focused ? 0 : sound.focused ? 1 : eye.focused ? 2 : (root.show-bluetooth-radio && bt.focused) ? 3 : (root.show-communications && comms.focused) ? 4 : (root.undock-visible && undock.focused) ? 5 : -1;
+        if (current < 0) {
+            return;
+        }
+        if (root.try-focus(current + delta)) {
+            return;
+        }
+        if (root.try-focus(current + 2 * delta)) {
+            return;
+        }
+        if (root.try-focus(current + 3 * delta)) {
+            return;
+        }
+    }
+
+    key-pressed(event) => {
+        if (event.text == Key.LeftArrow) {
+            root.move-focus(-1);
+            return accept;
+        }
+        if (event.text == Key.RightArrow) {
+            root.move-focus(1);
+            return accept;
+        }
+        reject
+    }
+
+    HorizontalLayout {
+        x: 3px;
+        y: root.button-y;
+        width: 5 * 40px;
+        height: 32px;
+        alignment: start;
+        spacing: 0px;
+        settings := HeaderButton {
+            glyph: HeaderGlyphs.settings;
+            tooltip: "Settings";
+            clicked(mods) => {
+                FlyoutActions.any-press();
+                root.settings-clicked();
+            }
+        }
+        sound := HeaderButton {
+            glyph: HeaderGlyphs.sound-settings;
+            tooltip: "Open Windows sound settings";
+            clicked(mods) => {
+                FlyoutActions.any-press();
+                root.sound-settings-clicked();
+            }
+        }
+        eye := HeaderButton {
+            glyph: root.eye-glyph;
+            tooltip: "Show/hide disabled devices";
+            clicked(mods) => {
+                FlyoutActions.any-press();
+                root.disabled-devices-clicked();
+            }
+        }
+        if root.show-bluetooth-radio: bt-slot := Rectangle {
+            width: 40px;
+            height: 32px;
+        }
+        if root.show-communications: comms-slot := Rectangle {
+            width: 40px;
+            height: 32px;
+        }
+    }
+    // The optional buttons keep stable names for keyboard navigation; they sit over their slots.
+    bt := HeaderButton {
+        x: 3px + 3 * 40px;
+        y: root.button-y;
+        visible: root.show-bluetooth-radio;
+        tab-stop: root.show-bluetooth-radio;
+        enabled: root.show-bluetooth-radio;
+        glyph: HeaderGlyphs.bluetooth;
+        glyph-opacity: root.bluetooth-radio-on ? 1.0 : 0.4;
+        tooltip: root.bluetooth-radio-tooltip;
+        clicked(mods) => {
+            FlyoutActions.any-press();
+            root.bluetooth-radio-clicked(mods);
+        }
+    }
+    comms := HeaderButton {
+        x: 3px + (root.show-bluetooth-radio ? 4 : 3) * 40px;
+        y: root.button-y;
+        visible: root.show-communications;
+        tab-stop: root.show-communications;
+        enabled: root.show-communications;
+        glyph: HeaderGlyphs.communications;
+        glyph-opacity: root.communications-active ? 1.0 : 0.4;
+        tooltip: "Communications";
+        clicked(mods) => {
+            FlyoutActions.any-press();
+            root.communications-clicked(mods);
+        }
+    }
+    undock := UndockButton {
+        x: root.width - 7px - 40px;
+        y: root.button-y;
+        visible: root.undock-visible;
+        undocked: root.undocked;
+        pointer(kind, inside) => {
+            root.undock-pointer(kind, inside);
+        }
+        activated => {
+            root.undock-activated();
+        }
+    }
+}
+
+export component FlyoutWindow inherits Window {
+    in property <[DeviceRow]> devices;
+    in property <bool> header-at-bottom: false;
+    in property <bool> show-bluetooth-radio: true;
+    in property <bool> bluetooth-radio-on: false;
+    in property <string> bluetooth-radio-tooltip;
+    in property <bool> show-communications: false;
+    in property <bool> communications-active: false;
+    in property <string> eye-glyph: "\u{ED1A}";
+    in property <bool> undock-visible: true;
+    in property <bool> undocked: false;
+    // Device list cap (ResolveMaxHeight(ContentHeightReserve)) and window cap (ApplyWorkAreaMaxHeight).
+    in property <length> list-max-height: 900px;
+    in property <length> window-max-height: 1000px;
+    in-out property <length> list-content-y: 0px;
+    out property <length> list-extent-height: root.list-content-height;
+    out property <length> list-height: body.height;
+    out property <length> content-height: min(root.window-max-height, frame-layout.preferred-height + 4px);
+
+    callback settings-clicked();
+    callback sound-settings-clicked();
+    callback disabled-devices-clicked();
+    callback bluetooth-radio-clicked(ClickModifiers);
+    callback communications-clicked(ClickModifiers);
+    // Undock button gesture: kind 0 press, 1 move, 2 release (inside = released over the button),
+    // 3 capture lost; and keyboard activation.
+    callback undock-pointer(int, bool);
+    callback undock-activated();
+    // Chrome drag on non-interactive frame areas: 0 press, 1 move, 2 release, 3 capture lost.
+    callback chrome-pointer(int);
+    callback escape-pressed();
+
+    public function focus-root() {
+        root-focus.focus();
+    }
+
+    no-frame: true;
+    always-on-top: true;
+    title: "VolumeTrayAppDotNET";
+    background: Theme.background;
+    default-font-family: Theme.ui-font;
+    min-width: 350px;
+    max-width: 350px;
+    preferred-width: 350px;
+    min-height: root.content-height;
+    max-height: root.content-height;
+    preferred-height: root.content-height;
+
+    property <length> list-content-height: cards.preferred-height;
+    property <bool> empty: root.devices.length == 0;
+
+    root-focus := FocusScope {
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.escape-pressed();
+                return accept;
+            }
+            reject
+        }
+
+        // FlyoutFrame border (radius 8|0).
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.corner-radius;
+            background: Theme.background;
+        }
+
+        // Window drag source behind everything: frame edge, header background, empty state.
+        TouchArea {
+            pointer-event(event) => {
+                if (event.button == PointerEventButton.left && event.kind == PointerEventKind.down) {
+                    FlyoutActions.any-press();
+                    root.chrome-pointer(0);
+                } else if (event.kind == PointerEventKind.move && self.pressed) {
+                    root.chrome-pointer(1);
+                } else if (event.button == PointerEventButton.left && event.kind == PointerEventKind.up) {
+                    root.chrome-pointer(2);
+                } else if (event.kind == PointerEventKind.cancel) {
+                    root.chrome-pointer(3);
+                }
+            }
+        }
+
+        frame-layout := VerticalLayout {
+            x: 2px;
+            y: 2px;
+            width: root.width - 4px;
+            height: root.height - 4px;
+            spacing: 0px;
+
+            if !root.header-at-bottom: FlyoutHeader {
+                at-bottom: false;
+                show-bluetooth-radio: root.show-bluetooth-radio;
+                bluetooth-radio-on: root.bluetooth-radio-on;
+                bluetooth-radio-tooltip: root.bluetooth-radio-tooltip;
+                show-communications: root.show-communications;
+                communications-active: root.communications-active;
+                eye-glyph: root.eye-glyph;
+                undock-visible: root.undock-visible;
+                undocked: root.undocked;
+                settings-clicked => {
+                    root.settings-clicked();
+                }
+                sound-settings-clicked => {
+                    root.sound-settings-clicked();
+                }
+                disabled-devices-clicked => {
+                    root.disabled-devices-clicked();
+                }
+                bluetooth-radio-clicked(mods) => {
+                    root.bluetooth-radio-clicked(mods);
+                }
+                communications-clicked(mods) => {
+                    root.communications-clicked(mods);
+                }
+                undock-pointer(kind, inside) => {
+                    root.undock-pointer(kind, inside);
+                }
+                undock-activated => {
+                    root.undock-activated();
+                }
+            }
+
+            body := Rectangle {
+                min-height: root.empty ? empty-text.preferred-height + 36px : min(root.list-content-height, root.list-max-height);
+                max-height: self.min-height;
+
+                // The device list is not a drag source (it lives in a ScrollViewer in the C# app).
+                if !root.empty: TouchArea {
+                    pointer-event(event) => {
+                        if (event.kind == PointerEventKind.down) {
+                            FlyoutActions.any-press();
+                        }
+                    }
+                }
+                list := Flickable {
+                    width: parent.width;
+                    height: parent.height;
+                    content-width: self.width;
+                    content-height: root.list-content-height;
+                    content-y <=> root.list-content-y;
+                    interactive: false;
+                    visible: !root.empty;
+                    cards := VerticalLayout {
+                        width: list.width;
+                        spacing: 0px;
+                        for device[i] in root.devices: DeviceCard {
+                            drow: device;
+                            dev: i;
+                        }
+                    }
+                }
+                OverlayScrollBar {
+                    x: parent.width - self.width;
+                    height: list.height;
+                    content-height: list.content-height;
+                    visible-height: list.height;
+                    content-y <=> list.content-y;
+                    active: true;
+                }
+                empty-text := Text {
+                    visible: root.empty;
+                    y: 18px;
+                    height: parent.height - 36px;
+                    width: parent.width;
+                    text: "No audio devices";
+                    font-size: 13px;
+                    color: Theme.secondary-foreground;
+                    opacity: 0.7;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+
+            if root.header-at-bottom: FlyoutHeader {
+                at-bottom: true;
+                show-bluetooth-radio: root.show-bluetooth-radio;
+                bluetooth-radio-on: root.bluetooth-radio-on;
+                bluetooth-radio-tooltip: root.bluetooth-radio-tooltip;
+                show-communications: root.show-communications;
+                communications-active: root.communications-active;
+                eye-glyph: root.eye-glyph;
+                undock-visible: root.undock-visible;
+                undocked: root.undocked;
+                settings-clicked => {
+                    root.settings-clicked();
+                }
+                sound-settings-clicked => {
+                    root.sound-settings-clicked();
+                }
+                disabled-devices-clicked => {
+                    root.disabled-devices-clicked();
+                }
+                bluetooth-radio-clicked(mods) => {
+                    root.bluetooth-radio-clicked(mods);
+                }
+                communications-clicked(mods) => {
+                    root.communications-clicked(mods);
+                }
+                undock-pointer(kind, inside) => {
+                    root.undock-pointer(kind, inside);
+                }
+                undock-activated => {
+                    root.undock-activated();
+                }
+            }
+        }
+
+        TooltipOverlay {
+            window-width: root.width;
+            window-height: root.height;
+        }
+    }
+
+    // Tooltip show delay (ToolTipShowDelayMs, also the between-show delay).
+    Timer {
+        interval: max(1ms, Theme.tooltip-delay);
+        running: Tip.pending;
+        triggered => {
+            Tip.pending = false;
+            Tip.shown = true;
+        }
+    }
+}
+
+// TextButton (FlyoutCards): font 13 SemiBold, border 1, radius 4, padding 10,5.
+component DialogButton inherits Rectangle {
+    in property <string> text;
+    in property <bool> primary: false;
+    callback clicked();
+    min-width: label.preferred-width + 20px;
+    min-height: label.preferred-height + 10px;
+    border-width: 1px;
+    border-radius: Theme.control-corner-radius;
+    border-color: focus.has-focus ? Theme.foreground : Theme.border;
+    background: touch.pressed ? Theme.button-pressed : touch.has-hover ? Theme.button-hover : Theme.control-background;
+    label := Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: 600;
+        color: Theme.foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: MouseCursor.pointer;
+        clicked => {
+            root.clicked();
+        }
+    }
+    focus := FocusScope {
+        focus-on-click: false;
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked();
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Confirmation dialog owned by the flyout (TrayAppDotNETConfirmationWindow, used for the
+// "Equalizer APO not detected" prompt): title, body, Cancel + confirm.
+export component ConfirmDialog inherits Window {
+    in property <string> heading;
+    in property <string> body;
+    in property <string> confirm-text;
+    in property <string> cancel-text: "Cancel";
+    callback confirmed();
+    callback cancelled();
+
+    no-frame: true;
+    always-on-top: true;
+    title: root.heading;
+    background: Theme.background;
+    default-font-family: Theme.ui-font;
+    min-width: 300px;
+    max-width: 300px;
+
+    FocusScope {
+        key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                root.cancelled();
+                return accept;
+            }
+            reject
+        }
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.border;
+            border-radius: Theme.control-corner-radius;
+        }
+        VerticalLayout {
+            padding: 16px;
+            spacing: 0px;
+            Text {
+                text: root.heading;
+                font-size: 14px;
+                font-weight: 600;
+                color: Theme.foreground;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 8px;
+            }
+            Text {
+                text: root.body;
+                font-size: 13px;
+                color: Theme.foreground;
+                wrap: word-wrap;
+            }
+            Rectangle {
+                height: 14px;
+            }
+            HorizontalLayout {
+                alignment: end;
+                spacing: 8px;
+                DialogButton {
+                    text: root.cancel-text;
+                    clicked => {
+                        root.cancelled();
+                    }
+                }
+                DialogButton {
+                    text: root.confirm-text;
+                    primary: true;
+                    clicked => {
+                        root.confirmed();
+                    }
+                }
+            }
+        }
+    }
+}

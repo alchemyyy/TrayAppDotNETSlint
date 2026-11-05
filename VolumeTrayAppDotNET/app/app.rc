@@ -1,0 +1,7 @@
+#pragma code_page(65001)
+
+// Resource id 1: the app icon (window icons, tray fallback via tadn_shell::raster::app_icon_image).
+1 ICON "app.ico"
+
+// RT_MANIFEST (24), id 1.
+1 24 "app.manifest"

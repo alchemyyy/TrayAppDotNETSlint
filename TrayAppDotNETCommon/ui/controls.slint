@@ -1,0 +1,64 @@
+// Shared primitive controls used by more than one window. Window-specific controls live with
+// their window (flyout: vtadn_flyout/ui, settings: ui/settings/).
+
+import { Theme } from "theme.slint";
+
+// Pointer modifiers captured at click time; Slint `PointerEvent.modifiers` is only available in
+// `pointer-event`, so buttons that care about Ctrl/Alt/Shift + click report them explicitly.
+export struct ClickModifiers {
+    control: bool,
+    alt: bool,
+    shift: bool,
+}
+
+// Icon-font button with hover/pressed backgrounds (FlyoutButtonState rules: background on hover
+// and press, glyph dims when `dimmed`). Reports left clicks with modifiers and right clicks.
+export component GlyphButton inherits Rectangle {
+    in property <string> glyph;
+    in property <string> font-family: Theme.icon-font;
+    in property <length> glyph-size: 16px;
+    in property <bool> dimmed: false;
+    in property <float> dimmed-opacity: 0.4;
+    in property <bool> enabled: true;
+    in property <color> glyph-color: Theme.icon-foreground;
+    in property <string> tooltip;
+    out property <bool> has-hover: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    callback clicked(ClickModifiers);
+    callback right-clicked();
+
+    width: 32px;
+    height: 32px;
+    border-radius: Theme.control-corner-radius;
+    background: !root.enabled ? transparent : touch.pressed ? Theme.button-pressed : touch.has-hover ? Theme.button-hover : transparent;
+    animate background { duration: Theme.hover-animation; }
+    accessible-role: button;
+    accessible-label: root.tooltip;
+
+    Text {
+        text: root.glyph;
+        font-family: root.font-family;
+        font-size: root.glyph-size;
+        color: root.glyph-color;
+        opacity: root.dimmed || !root.enabled ? root.dimmed-opacity : 1.0;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.up && self.has-hover) {
+                if (event.button == PointerEventButton.left) {
+                    root.clicked({
+                        control: event.modifiers.control,
+                        alt: event.modifiers.alt,
+                        shift: event.modifiers.shift,
+                    });
+                } else if (event.button == PointerEventButton.right) {
+                    root.right-clicked();
+                }
+            }
+        }
+    }
+}

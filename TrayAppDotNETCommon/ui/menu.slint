@@ -1,0 +1,107 @@
+// Shared context-menu visuals. Owned by the tadn_menu crate (tray menu window) and reused by
+// in-window menus. `MenuEntry` is the data contract; `MenuList` renders a vertical list with
+// hover, keyboard selection, separators, check marks and optional leading glyphs.
+//
+// Metrics follow ContextMenuWindow.cs: rows have corner 4 (0 when not rounded), padding 6,
+// horizontal margin 2, min width 150 and 2 px above/below; a separator draws a 1 px rule
+// (theme Separator) that spans the full list width with 4 px on both sides. Only the label scales
+// with the font size; paddings and widths are fixed. Rows are invoked on left-button press.
+
+import { Theme } from "theme.slint";
+import { CommonGlyphs } from "glyphs.slint";
+
+export struct MenuEntry {
+    // Returned through `activated` when the row is invoked.
+    id: int,
+    text: string,
+    // Optional leading glyph (icon font code point); empty for none.
+    glyph: string,
+    checked: bool,
+    enabled: bool,
+    separator: bool,
+}
+
+export component MenuList inherits Rectangle {
+    in property <[MenuEntry]> entries;
+    // Index into `entries` of the focused row (hover or keyboard), -1 for none.
+    in-out property <int> selected-index: -1;
+    // True when the selection came from the keyboard (it then shows the highlight).
+    in-out property <bool> keyboard-selection: false;
+    // Row text size; menus scale from Theme.menu-font-size.
+    in property <length> font-size: Theme.menu-font-size;
+    // Reserve the 24 px leading glyph column (any row has a glyph or a check mark).
+    in property <bool> glyph-column: false;
+    callback activated(int /* entry id */);
+    // A row became the keyboard selection: `y`/`height` in list coordinates (scroll it into view).
+    callback reveal(length /* y */, length /* height */);
+
+    VerticalLayout {
+        padding: 0px;
+        spacing: 0px;
+        for entry[i] in root.entries: row := VerticalLayout {
+            property <bool> rule-above: i > 0 && root.entries[i - 1].separator;
+            property <bool> rule-below: i + 1 < root.entries.length && root.entries[i + 1].separator;
+            property <bool> is-selected: root.keyboard-selection && root.selected-index == i;
+            changed is-selected => {
+                if (self.is-selected) {
+                    root.reveal(self.y, self.height);
+                }
+            }
+
+            if entry.separator: Rectangle {
+                height: 1px;
+                background: Theme.separator;
+            }
+            if !entry.separator: VerticalLayout {
+                padding-top: row.rule-above ? 4px : 2px;
+                padding-bottom: row.rule-below ? 4px : 2px;
+                padding-left: 2px;
+                padding-right: 2px;
+                Rectangle {
+                    min-width: 150px;
+                    border-radius: Theme.control-corner-radius;
+                    background: entry.enabled && (row-touch.has-hover || row.is-selected) ? Theme.hover : transparent;
+                    row-touch := TouchArea {
+                        enabled: entry.enabled;
+                        mouse-cursor: pointer;
+                        pointer-event(event) => {
+                            if (event.kind == PointerEventKind.down && event.button == PointerEventButton.left) {
+                                root.activated(entry.id);
+                            }
+                        }
+                        moved => {
+                            if (root.selected-index != i || root.keyboard-selection) {
+                                root.selected-index = i;
+                                root.keyboard-selection = false;
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        padding: 6px;
+                        spacing: 0px;
+                        if root.glyph-column: Text {
+                            width: 24px;
+                            text: entry.checked ? CommonGlyphs.checkmark : entry.glyph;
+                            font-family: Theme.icon-font;
+                            font-size: 16px;
+                            horizontal-alignment: center;
+                            vertical-alignment: center;
+                            color: entry.enabled ? Theme.foreground : Theme.disabled-foreground;
+                        }
+                        if root.glyph-column: Rectangle {
+                            width: 8px;
+                        }
+                        Text {
+                            text: entry.text;
+                            font-family: Theme.ui-font;
+                            font-size: root.font-size;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            color: entry.enabled ? Theme.foreground : Theme.disabled-foreground;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

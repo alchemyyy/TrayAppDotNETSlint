@@ -1,0 +1,75 @@
+// Top-level context menu window (tray menu and menus opened from other windows). Port of
+// TrayAppDotNETCommon/src/UI/ContextMenus/ContextMenuWindow.cs: root padding 2, rows in a
+// vertical scroll viewer capped at the work-area height, keyboard handled by Rust.
+
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "@tadn/theme.slint";
+import { MenuEntry, MenuList } from "@tadn/menu.slint";
+
+export { Theme, MenuEntry }
+
+export component MenuWindow inherits Window {
+    in property <[MenuEntry]> entries;
+    in property <length> font-size: 15px;
+    in property <bool> glyph-column: false;
+    // Work-area height minus the edge padding, in logical px.
+    in property <length> max-content-height: 100000px;
+    in-out property <int> selected-index <=> list.selected-index;
+    in-out property <bool> keyboard-selection <=> list.keyboard-selection;
+    // Natural size of the menu (before the window is sized to it).
+    out property <length> natural-width: layout.preferred-width;
+    out property <length> natural-height: layout.preferred-height;
+    callback activated(int /* entry id */);
+    // Key press: `text` of the KeyEvent; returns true when handled.
+    callback key-pressed(string) -> bool;
+
+    public function scroll-to-bottom() {
+        scroll.content-y = min(0px, scroll.visible-height - scroll.content-height);
+    }
+
+    public function scroll-to-top() {
+        scroll.content-y = 0px;
+    }
+
+    no-frame: true;
+    always-on-top: true;
+    background: Theme.background;
+    title: "Menu";
+    forward-focus: keys;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (root.key-pressed(event.text)) {
+                return accept;
+            }
+            reject
+        }
+
+        layout := VerticalLayout {
+            padding: 2px;
+            scroll := ScrollView {
+                min-width: list.min-width;
+                preferred-width: list.preferred-width;
+                height: min(list.preferred-height, root.max-content-height - 4px);
+                content-width: self.visible-width;
+                content-height: list.preferred-height;
+                list := MenuList {
+                    width: scroll.visible-width;
+                    entries: root.entries;
+                    font-size: root.font-size;
+                    glyph-column: root.glyph-column;
+                    activated(id) => {
+                        root.activated(id);
+                    }
+                    reveal(y, height) => {
+                        if (y + scroll.content-y < 0px) {
+                            scroll.content-y = -y;
+                        } else if (y + height + scroll.content-y > scroll.visible-height) {
+                            scroll.content-y = scroll.visible-height - y - height;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

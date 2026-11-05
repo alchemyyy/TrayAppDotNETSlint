@@ -1,0 +1,284 @@
+// Flyout building blocks: tooltip targets, glyph text with GlyphCatalog transforms, icon buttons
+// (FlyoutButtonState rules), the Bluetooth countdown pie, an overlay scroll bar and the tooltip
+// overlay.
+
+import { Theme } from "@tadn/theme.slint";
+import { ClickModifiers } from "@tadn/controls.slint";
+import { FocusRing } from "@tadn/flyout_slider.slint";
+import { GlyphData, Tip } from "flyout_types.slint";
+
+// Requests the shared tooltip while its parent is hovered and no pointer button is down on it.
+// Fills its parent.
+export component TipTarget {
+    in property <string> tip;
+    in property <bool> hovered;
+    in property <bool> engaged;
+    property <int> token: 0;
+
+    init => {
+        self.token = Tip.next-token;
+        Tip.next-token += 1;
+    }
+
+    function refresh() {
+        if (root.hovered && !root.engaged && root.tip != "") {
+            Tip.request(root.token, root.tip, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+        } else {
+            Tip.release(root.token);
+        }
+    }
+
+    changed hovered => {
+        root.refresh();
+    }
+    changed engaged => {
+        root.refresh();
+    }
+    changed tip => {
+        if (Tip.owner == root.token) {
+            Tip.update-text(root.token, root.tip);
+        } else {
+            root.refresh();
+        }
+    }
+}
+
+// Icon-font text with a GlyphCatalog transform. Centred in its box, line box = parent size.
+export component GlyphText {
+    in property <GlyphData> glyph;
+    in property <length> font-size: 15px;
+    in property <color> color: Theme.icon-foreground;
+    in property <TextHorizontalAlignment> horizontal-alignment: center;
+    Text {
+        x: root.glyph.tx;
+        y: root.glyph.ty;
+        width: root.width;
+        height: root.height;
+        text: root.glyph.text;
+        font-family: Theme.icon-font;
+        font-size: root.font-size;
+        font-weight: root.glyph.bold ? 800 : 400;
+        color: root.color;
+        horizontal-alignment: root.horizontal-alignment;
+        vertical-alignment: center;
+        transform-scale-x: root.glyph.scale * 100%;
+        transform-scale-y: root.glyph.scale * 100%;
+    }
+}
+
+// Transparent icon button: hover and pressed backgrounds, hand cursor, left click on release
+// inside, right click on release, Enter/Space activation with the key modifiers when focused,
+// tooltip hidden while a button is down.
+export component IconButton inherits Rectangle {
+    in property <color> hover-color: Theme.button-hover;
+    in property <color> pressed-color: Theme.button-pressed;
+    in property <bool> enabled: true;
+    in property <string> tooltip;
+    in property <bool> tab-stop: true;
+    in property <length> corner: Theme.control-corner-radius;
+    out property <bool> hovered: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    out property <bool> keyboard-focused: focus.keyboard-focused;
+    out property <bool> focused: focus.has-focus;
+    callback clicked(ClickModifiers);
+    callback right-clicked();
+    property <bool> engaged: false;
+    property <bool> left-down: false;
+
+    public function focus-button() {
+        focus.focus();
+        focus.keyboard-focused = true;
+    }
+
+    border-radius: root.corner;
+    background: !root.enabled ? transparent : touch.pressed ? root.pressed-color : touch.has-hover ? root.hover-color : transparent;
+    accessible-role: button;
+    accessible-label: root.tooltip;
+
+    focus := FocusScope {
+        in-out property <bool> keyboard-focused: false;
+        enabled: root.enabled && root.tab-stop;
+        focus-on-click: false;
+        focus-on-tab-navigation: root.tab-stop;
+        focus-gained(reason) => {
+            self.keyboard-focused = reason == FocusReason.tab-navigation;
+        }
+        focus-lost(reason) => {
+            self.keyboard-focused = false;
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                root.clicked({ control: event.modifiers.control, alt: event.modifiers.alt, shift: event.modifiers.shift });
+                return accept;
+            }
+            reject
+        }
+    }
+
+    @children
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                if (event.button == PointerEventButton.left || event.button == PointerEventButton.right || event.button == PointerEventButton.middle) {
+                    root.engaged = true;
+                }
+                if (event.button == PointerEventButton.left) {
+                    root.left-down = true;
+                }
+            } else if (event.kind == PointerEventKind.up) {
+                root.engaged = false;
+                if (event.button == PointerEventButton.right) {
+                    root.right-clicked();
+                } else if (event.button == PointerEventButton.left && root.left-down) {
+                    root.left-down = false;
+                    if (self.mouse-x >= 0px && self.mouse-x < self.width && self.mouse-y >= 0px && self.mouse-y < self.height) {
+                        root.clicked({ control: event.modifiers.control, alt: event.modifiers.alt, shift: event.modifiers.shift });
+                    }
+                }
+            } else if (event.kind == PointerEventKind.cancel) {
+                root.engaged = false;
+                root.left-down = false;
+            }
+        }
+    }
+
+    TipTarget {
+        tip: root.tooltip;
+        hovered: touch.has-hover;
+        engaged: root.engaged;
+    }
+
+    if focus.has-focus && focus.keyboard-focused: FocusRing {
+        radius: root.corner;
+    }
+}
+
+// Remaining reconnect window as a pie eaten clockwise from 12 o'clock, plus its outline circle.
+export component CountdownPie {
+    in property <int> step;
+    in property <color> color: Theme.icon-foreground;
+    in property <length> stroke: 1px;
+    property <float> fraction: clamp(root.step / 360, 0, 1);
+    property <length> radius: min(root.width, root.height) / 2 - root.stroke / 2;
+    property <length> cx: root.width / 2;
+    property <length> cy: root.height / 2;
+    // Start angle -90deg + (1 - f) * 360deg, sweeping clockwise back to -90deg (12 o'clock).
+    property <angle> start: -90deg + (1 - root.fraction) * 360deg;
+
+    if root.step >= 360: Rectangle {
+        x: root.cx - root.radius;
+        y: root.cy - root.radius;
+        width: root.radius * 2;
+        height: root.radius * 2;
+        border-radius: root.radius;
+        background: root.color;
+    }
+    if root.step > 0 && root.step < 360: Path {
+        width: root.width;
+        height: root.height;
+        viewbox-x: 0;
+        viewbox-y: 0;
+        viewbox-width: root.width / 1px;
+        viewbox-height: root.height / 1px;
+        fill: root.color;
+        MoveTo {
+            x: root.cx / 1px;
+            y: root.cy / 1px;
+        }
+        LineTo {
+            x: (root.cx + root.radius * cos(root.start)) / 1px;
+            y: (root.cy + root.radius * sin(root.start)) / 1px;
+        }
+        ArcTo {
+            x: root.cx / 1px;
+            y: (root.cy - root.radius) / 1px;
+            radius-x: root.radius / 1px;
+            radius-y: root.radius / 1px;
+            large-arc: root.fraction > 0.5;
+            sweep: true;
+        }
+        Close { }
+    }
+    Rectangle {
+        x: root.cx - root.radius - root.stroke / 2;
+        y: root.cy - root.radius - root.stroke / 2;
+        width: root.radius * 2 + root.stroke;
+        height: root.radius * 2 + root.stroke;
+        border-radius: self.width / 2;
+        border-width: root.stroke;
+        border-color: root.color;
+    }
+}
+
+// Thin auto-hide scroll bar over the right edge of a Flickable (Fluent overlay scroll bar).
+export component OverlayScrollBar {
+    in property <length> content-height;
+    in property <length> visible-height;
+    in-out property <length> content-y;
+    in property <bool> active;
+    property <length> max-offset: max(0px, root.content-height - root.visible-height);
+    property <length> thumb-length: max(16px, root.visible-height * root.visible-height / max(1px, root.content-height));
+    property <length> thumb-travel: max(0px, root.visible-height - root.thumb-length);
+    property <bool> wide: area.has-hover || area.pressed;
+    property <length> press-offset;
+    width: 12px;
+    visible: root.max-offset > 0px && (root.active || root.wide);
+
+    Rectangle {
+        x: parent.width - self.width - 2px;
+        y: root.max-offset > 0px ? -root.content-y / root.max-offset * root.thumb-travel : 0px;
+        width: root.wide ? 6px : 2px;
+        height: root.thumb-length;
+        border-radius: self.width / 2;
+        background: Theme.foreground.transparentize(0.55);
+    }
+    area := TouchArea {
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                root.press-offset = self.mouse-y - (root.max-offset > 0px ? -root.content-y / root.max-offset * root.thumb-travel : 0px);
+            }
+        }
+        moved => {
+            if (self.pressed && root.thumb-travel > 0px) {
+                let thumb-top = clamp(self.mouse-y - root.press-offset, 0px, root.thumb-travel);
+                root.content-y = -thumb-top / root.thumb-travel * root.max-offset;
+            }
+        }
+    }
+}
+
+// The single tooltip popup (Fluent ToolTip look: padding 9,6,9,8, font 12, radius 4, max width 320).
+export component TooltipOverlay {
+    in property <length> window-width;
+    in property <length> window-height;
+    // Above the target with a 4px gap; flipped below when it would leave the window.
+    x: 0px;
+    y: 0px;
+    width: root.window-width;
+    height: root.window-height;
+
+    if Tip.shown && Tip.text != "": bubble := Rectangle {
+        property <length> centered-x: Tip.anchor-x + Tip.anchor-width / 2 - self.width / 2;
+        x: clamp(self.centered-x, 0px, max(0px, root.window-width - self.width));
+        y: Tip.anchor-y - 4px - self.height >= 0px ? Tip.anchor-y - 4px - self.height : Tip.anchor-y + Tip.anchor-height + 4px;
+        width: min(320px, root.window-width, label.preferred-width + 18px);
+        height: label.preferred-height + 14px;
+        border-radius: Theme.control-corner-radius;
+        border-width: 1px;
+        border-color: Theme.border;
+        background: Theme.card-background;
+        label := Text {
+            x: 9px;
+            y: 6px;
+            width: parent.width - 18px;
+            text: Tip.text;
+            font-family: Theme.ui-font;
+            font-size: 12px;
+            color: Theme.foreground;
+            wrap: word-wrap;
+        }
+    }
+}

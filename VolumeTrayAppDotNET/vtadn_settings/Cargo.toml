@@ -1,0 +1,22 @@
+[package]
+name = "vtadn_settings"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vtadn_model.workspace = true
+tadn_common.workspace = true
+tadn_shell.workspace = true
+log.workspace = true
+slint.workspace = true
+windows.workspace = true
+windows-core.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,914 @@
+// One device card: app drawer band (sliders or icon grid) and device band (slider row + title row
+// with toolbar). Port of VolumeFlyoutWindow.BuildCell / BuildSliderDrawer / BuildIconGridDrawer /
+// BuildAppSliderRow / BuildAppIconCell / BuildDeviceTitleRow / BuildDeviceSliderRow.
+//
+// Tab order is the tree order, which follows the visual order of every layout variant (ControlMap
+// Device scope: AppDrawer, ToggleMute, Volume, EditPercent, DeviceName, Toolbar; variants reorder).
+
+import { Theme } from "@tadn/theme.slint";
+import { ClickModifiers } from "@tadn/controls.slint";
+import { FlyoutSlider, FocusRing } from "@tadn/flyout_slider.slint";
+import { GlyphData, AppRow, DeviceRow, FlyoutState, FlyoutActions } from "flyout_types.slint";
+import { TipTarget, GlyphText, IconButton, CountdownPie, OverlayScrollBar } from "flyout_controls.slint";
+
+// Common glyphs used by the cards.
+global CardGlyphs {
+    out property <string> app-fallback: "\u{E978}";
+    out property <string> app-mute-overlay: "\u{E653}";
+    out property <string> equalizer: "\u{E9E9}";
+    out property <string> signal-not-connected: "\u{E871}";
+    out property <string> ear-listen: "\u{F270}";
+    out property <string> chevron-up-small: "\u{E96D}";
+    out property <string> chevron-down-small: "\u{E96E}";
+}
+
+// Percent label + inline editor (BuildPercentEditor / WirePercentEditor). `app` is -1 for the
+// device slider. Margin 10,-2,0,0; MinWidth 32 (editor 42); font 18, right aligned.
+component PercentHost {
+    in property <int> dev;
+    in property <int> app;
+    in property <string> text;
+    property <bool> editing: FlyoutState.percent-device == root.dev && FlyoutState.percent-app == root.app;
+    property <length> margin-left: 10px;
+    min-width: root.margin-left + (root.editing ? 42px : max(32px, label.preferred-width));
+    preferred-width: self.min-width;
+    max-width: self.min-width;
+
+    focus := FocusScope {
+        in-out property <bool> keyboard-focused: false;
+        x: root.margin-left;
+        width: root.width - root.margin-left;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focused = reason == FocusReason.tab-navigation;
+        }
+        focus-lost(reason) => {
+            self.keyboard-focused = false;
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                FlyoutActions.percent-activated(root.dev, root.app);
+                return accept;
+            }
+            reject
+        }
+    }
+
+    label := Text {
+        x: root.margin-left;
+        y: -2px;
+        width: root.width - root.margin-left;
+        height: root.height + 2px;
+        visible: !root.editing;
+        text: root.text;
+        font-size: 18px;
+        color: Theme.foreground;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+    }
+
+    TouchArea {
+        x: root.margin-left;
+        width: root.width - root.margin-left;
+        enabled: !root.editing;
+        mouse-cursor: MouseCursor.text;
+        double-clicked => {
+            FlyoutActions.percent-pressed(root.dev, root.app, 0, true);
+        }
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down && event.button != PointerEventButton.left) {
+                FlyoutActions.any-press();
+                FlyoutActions.percent-pressed(root.dev, root.app, event.button == PointerEventButton.right ? 1 : 2, false);
+            } else if (event.kind == PointerEventKind.down) {
+                FlyoutActions.any-press();
+            }
+        }
+    }
+
+    if focus.has-focus && focus.keyboard-focused: FocusRing {
+        x: root.margin-left;
+        width: root.width - root.margin-left;
+    }
+
+    if root.editing: FocusScope {
+        x: root.margin-left;
+        y: (root.height - 30px) / 2;
+        width: root.width - root.margin-left;
+        height: 30px;
+        capture-key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                FlyoutActions.percent-cancel();
+                return accept;
+            }
+            reject
+        }
+        Rectangle {
+            background: Theme.background;
+            border-width: 1px;
+            border-color: Theme.border;
+            editor := TextInput {
+                x: 3px;
+                width: parent.width - 6px;
+                height: parent.height;
+                text <=> FlyoutState.percent-text;
+                font-size: 18px;
+                color: Theme.foreground;
+                selection-background-color: Theme.text-selection;
+                horizontal-alignment: right;
+                vertical-alignment: center;
+                single-line: true;
+                init => {
+                    self.focus();
+                    self.select-all();
+                }
+                accepted => {
+                    FlyoutActions.percent-commit(self.text);
+                }
+                changed has-focus => {
+                    if (!self.has-focus && root.editing) {
+                        FlyoutActions.percent-commit(self.text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// App icon (BuildAppIcon): image or fallback glyph, mute overlay (shown when muted; playback rows
+// preview it on hover), click-to-mute on playback rows.
+component AppIcon {
+    in property <AppRow> app;
+    in property <int> dev;
+    in property <int> index;
+    in property <length> image-size: 22px;
+    in property <length> glyph-size: 20px;
+    in property <bool> clickable: true;
+    out property <bool> hovered: touch.has-hover;
+    width: root.image-size;
+    height: root.image-size;
+
+    if root.app.has-icon: Image {
+        width: root.image-size;
+        height: root.image-size;
+        source: root.app.icon;
+        image-fit: contain;
+    }
+    if !root.app.has-icon: Text {
+        width: root.width;
+        height: root.height;
+        text: CardGlyphs.app-fallback;
+        font-family: Theme.icon-font;
+        font-size: root.glyph-size;
+        color: Theme.icon-foreground;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    Text {
+        width: root.width;
+        height: root.height;
+        visible: root.app.muted || (touch.has-hover && root.app.playback);
+        text: CardGlyphs.app-mute-overlay;
+        font-family: Theme.icon-font;
+        font-size: root.glyph-size;
+        color: Theme.icon-foreground;
+        opacity: 0.5;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    touch := TouchArea {
+        mouse-cursor: root.clickable && root.app.playback ? MouseCursor.pointer : MouseCursor.default;
+        pointer-event(event) => {
+            if (event.kind == PointerEventKind.down) {
+                FlyoutActions.any-press();
+            }
+            if (event.kind == PointerEventKind.up && event.button == PointerEventButton.left && root.clickable && root.app.playback) {
+                FlyoutActions.app-mute(root.dev, root.index);
+            }
+        }
+    }
+    TipTarget {
+        tip: root.app.tooltip;
+        hovered: touch.has-hover;
+        engaged: touch.pressed;
+    }
+}
+
+// Slider drawer row: icon | slider | percent; Margin 0,0,0,-2 (rows overlap by 2px).
+component AppSliderRow {
+    in property <AppRow> app;
+    in property <int> dev;
+    in property <int> index;
+    property <length> content-height: 32px;
+    min-height: root.content-height - 2px;
+    preferred-height: self.min-height;
+    max-height: self.min-height;
+    opacity: root.app.dimmed ? 0.4 : 1.0;
+
+    HorizontalLayout {
+        y: 0px;
+        width: root.width;
+        height: root.content-height;
+        spacing: 0px;
+        // Icon (22x22) with right margin 10; keyboard toggles mute on playback rows.
+        Rectangle {
+            width: 32px;
+            icon := AppIcon {
+                x: 0px;
+                y: (parent.height - self.height) / 2;
+                app: root.app;
+                dev: root.dev;
+                index: root.index;
+            }
+            icon-focus := FocusScope {
+                in-out property <bool> keyboard-focused: false;
+                x: 0px;
+                width: 22px;
+                enabled: root.app.playback;
+                focus-on-click: false;
+                focus-on-tab-navigation: root.app.playback;
+                focus-gained(reason) => {
+                    self.keyboard-focused = reason == FocusReason.tab-navigation;
+                }
+                focus-lost(reason) => {
+                    self.keyboard-focused = false;
+                }
+                key-pressed(event) => {
+                    if (event.text == Key.Return || event.text == " ") {
+                        FlyoutActions.app-mute(root.dev, root.index);
+                        return accept;
+                    }
+                    reject
+                }
+            }
+            if icon-focus.has-focus && icon-focus.keyboard-focused: FocusRing {
+                x: 0px;
+                y: (parent.height - 22px) / 2;
+                width: 22px;
+                height: 22px;
+            }
+        }
+        FlyoutSlider {
+            value: root.app.value;
+            peak-min: FlyoutState.meters[root.app.meter].min;
+            peak-max: FlyoutState.meters[root.app.meter].max;
+            thumb: FlyoutState.thumb;
+            wheel-step: FlyoutState.wheel-step;
+            meter-peak-color: FlyoutState.meter-peak-color;
+            meter-peak-stereo-color: FlyoutState.meter-peak-stereo-color;
+            edited(value) => {
+                FlyoutActions.app-slider-edited(root.dev, root.index, value);
+            }
+            drag-started => {
+                FlyoutActions.app-slider-drag(root.dev, root.index, true);
+            }
+            drag-completed => {
+                FlyoutActions.app-slider-drag(root.dev, root.index, false);
+            }
+        }
+        PercentHost {
+            dev: root.dev;
+            app: root.index;
+            text: root.app.percent;
+        }
+    }
+}
+
+// Icon grid cell (36x36): hover pill, scaled icon, activity badge.
+component AppIconCell {
+    in property <AppRow> app;
+    in property <int> dev;
+    in property <int> index;
+    property <length> image-size: FlyoutState.app-icon-image-size;
+    property <length> pill-size: min(36px, self.image-size + 2px);
+    width: 36px;
+    height: 36px;
+    opacity: root.app.dimmed ? 0.4 : 1.0;
+
+    Rectangle {
+        x: (parent.width - root.pill-size) / 2;
+        y: (parent.height - root.pill-size) / 2;
+        width: root.pill-size;
+        height: root.pill-size;
+        border-radius: Theme.control-corner-radius;
+        background: icon.hovered ? Theme.button-hover : transparent;
+    }
+    icon := AppIcon {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        app: root.app;
+        dev: root.dev;
+        index: root.index;
+        image-size: root.image-size;
+        glyph-size: FlyoutState.app-icon-glyph-size;
+        clickable: false;
+    }
+    if root.app.badge != "": Text {
+        x: parent.width - 4px - self.preferred-width;
+        y: parent.height - 4px - self.preferred-height;
+        text: root.app.badge;
+        font-family: Theme.icon-font;
+        font-size: 7px;
+        color: Theme.icon-foreground;
+    }
+}
+
+// App band: background, padding/margin per drawer kind and position, scroll viewer.
+component AppBand {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    property <bool> apps-bottom: FlyoutState.apps-bottom;
+    property <length> pad-left: root.drow.grid ? 13px : (root.apps-bottom ? 10px : 14px);
+    property <length> pad-right: root.drow.grid ? 11px : 12px;
+    property <length> pad-top: root.drow.grid ? 1px : 0px;
+    property <length> pad-bottom: root.drow.grid ? 2px : (root.apps-bottom ? 10px : 4px);
+    property <length> margin-top: root.drow.grid ? (root.apps-bottom ? -2px : -6px) : 0px;
+    property <length> margin-bottom: root.drow.grid ? (root.apps-bottom ? 2px : -4px) : 0px;
+    // Slider rows are 30px each (32px content, -2px bottom margin).
+    property <length> extent-height: root.drow.grid ? root.drow.grid-height : root.drow.apps.length * 30px;
+    property <length> visible-height: min(root.extent-height, root.drow.drawer-max-height);
+    property <length> band-height: root.pad-top + root.visible-height + root.pad-bottom;
+    property <length> bottom-radius: root.drow.is-last && root.apps-bottom ? Theme.corner-radius : 0px;
+    min-height: root.band-height + root.margin-top + root.margin-bottom;
+    preferred-height: self.min-height;
+    max-height: self.min-height;
+
+    Rectangle {
+        y: root.margin-top;
+        height: root.band-height;
+        background: Theme.footer-background;
+        border-bottom-left-radius: root.bottom-radius;
+        border-bottom-right-radius: root.bottom-radius;
+
+        flick := Flickable {
+            x: root.pad-left;
+            y: root.pad-top;
+            width: parent.width - root.pad-left - root.pad-right;
+            height: root.visible-height;
+            content-height: root.extent-height;
+            content-width: self.width;
+            interactive: false;
+
+            if !root.drow.grid: VerticalLayout {
+                width: flick.width;
+                spacing: 0px;
+                for app[i] in root.drow.apps: AppSliderRow {
+                    app: app;
+                    dev: root.dev;
+                    index: i;
+                }
+            }
+            if root.drow.grid: Rectangle {
+                width: flick.width;
+                height: root.drow.grid-height;
+                for app[i] in root.drow.apps: AppIconCell {
+                    x: app.x;
+                    y: app.y;
+                    app: app;
+                    dev: root.dev;
+                    index: i;
+                }
+            }
+        }
+        OverlayScrollBar {
+            x: parent.width - self.width;
+            y: flick.y;
+            height: flick.height;
+            content-height: flick.content-height;
+            visible-height: flick.height;
+            content-y <=> flick.content-y;
+            active: true;
+        }
+    }
+}
+
+// Name, format strip, rename editor (nameStack).
+component NameStack {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    property <bool> renaming: FlyoutState.rename-device == root.dev;
+    property <bool> has-format: root.drow.format-line != "";
+    min-height: name.preferred-height;
+    preferred-height: name.preferred-height;
+
+    content := Rectangle {
+        y: root.has-format ? 0px : 2px;
+        height: root.height;
+        name := Text {
+            width: parent.width;
+            text: root.drow.name;
+            font-size: 14px;
+            color: Theme.foreground;
+            overflow: elide;
+            vertical-alignment: center;
+        }
+        if root.has-format: Text {
+            x: 0px;
+            y: parent.height / 2 + 9px;
+            text: root.drow.format-line;
+            font-size: 8px;
+            color: Theme.foreground;
+            opacity: 0.45;
+        }
+        TouchArea {
+            double-clicked => {
+                FlyoutActions.name-double-clicked(root.dev);
+            }
+            pointer-event(event) => {
+                if (event.kind == PointerEventKind.down) {
+                    FlyoutActions.any-press();
+                }
+                if (event.kind == PointerEventKind.up && event.button == PointerEventButton.right) {
+                    FlyoutActions.name-right-clicked(root.dev, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                }
+            }
+        }
+    }
+
+    focus := FocusScope {
+        in-out property <bool> keyboard-focused: false;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focused = reason == FocusReason.tab-navigation;
+        }
+        focus-lost(reason) => {
+            self.keyboard-focused = false;
+        }
+        key-pressed(event) => {
+            if (event.text == Key.Return || event.text == " ") {
+                FlyoutActions.name-double-clicked(root.dev);
+                return accept;
+            }
+            reject
+        }
+    }
+    if focus.has-focus && focus.keyboard-focused && !root.renaming: FocusRing { }
+
+    if root.renaming: FocusScope {
+        y: (root.height - self.height) / 2;
+        height: max(24px, editor.preferred-height + 2px);
+        capture-key-pressed(event) => {
+            if (event.text == Key.Escape) {
+                FlyoutActions.rename-cancel();
+                return accept;
+            }
+            reject
+        }
+        Rectangle {
+            background: Theme.control-background;
+            border-width: 1px;
+            border-color: Theme.border;
+            editor := TextInput {
+                x: 5px;
+                width: parent.width - 10px;
+                height: parent.height;
+                text <=> FlyoutState.rename-text;
+                font-size: 14px;
+                color: Theme.foreground;
+                selection-background-color: Theme.text-selection;
+                vertical-alignment: center;
+                single-line: true;
+                init => {
+                    self.focus();
+                    self.select-all();
+                }
+                accepted => {
+                    FlyoutActions.rename-commit(self.text);
+                }
+                changed has-focus => {
+                    if (!self.has-focus && root.renaming) {
+                        FlyoutActions.rename-commit(self.text);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A 28x28 toolbar button slot with margin 0,3,0,-3 (and the extra right margin of the BT button).
+component ToolbarSlot {
+    in property <length> right-margin: 0px;
+    in property <bool> selected;
+    in property <bool> show-ring;
+    min-width: 28px + root.right-margin;
+    max-width: self.min-width;
+    min-height: 28px;
+    max-height: 28px;
+    Rectangle {
+        x: 0px;
+        y: 3px;
+        width: 28px;
+        height: 28px;
+        @children
+        if root.selected && root.show-ring: FocusRing {
+            radius: Theme.control-corner-radius;
+        }
+    }
+}
+
+// Title row: name stack | toolbar (single tab stop; Left/Right move, Enter/Space activate).
+component TitleRow {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    property <int> idx-bt: 0;
+    property <int> idx-lock: root.drow.show-bt ? 1 : 0;
+    property <int> idx-eq: root.idx-lock + (root.drow.show-lock ? 1 : 0);
+    property <int> idx-listen: root.idx-eq + (root.drow.show-eq ? 1 : 0);
+    property <int> idx-default: root.idx-listen + (root.drow.show-listen ? 1 : 0);
+    property <int> idx-chevron: root.idx-default + (root.drow.show-default ? 1 : 0);
+    property <int> selected: 0;
+    property <bool> ring: toolbar-focus.has-focus && toolbar-focus.keyboard-focused;
+
+    function activate(mods: ClickModifiers) {
+        if (root.drow.show-bt && root.selected == root.idx-bt) {
+            FlyoutActions.bt-clicked(root.dev, mods.control, mods.alt, mods.shift);
+        } else if (root.drow.show-lock && root.selected == root.idx-lock) {
+            FlyoutActions.lock-clicked(root.dev);
+        } else if (root.drow.show-eq && root.selected == root.idx-eq) {
+            FlyoutActions.eq-clicked(root.dev, mods.control, mods.alt, mods.shift);
+        } else if (root.drow.show-listen && root.selected == root.idx-listen) {
+            FlyoutActions.listen-clicked(root.dev, mods.control, mods.alt, mods.shift);
+        } else if (root.drow.show-default && root.selected == root.idx-default) {
+            FlyoutActions.default-clicked(root.dev, mods.control, mods.alt, mods.shift);
+        } else if (root.selected == root.idx-chevron && root.drow.has-groups) {
+            FlyoutActions.chevron-clicked(root.dev);
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        alignment: stretch;
+        Rectangle {
+            horizontal-stretch: 1;
+            NameStack {
+                y: (parent.height - self.preferred-height) / 2;
+                height: self.preferred-height;
+                width: parent.width;
+                drow: root.drow;
+                dev: root.dev;
+            }
+        }
+        toolbar := HorizontalLayout {
+            spacing: 0px;
+            horizontal-stretch: 0;
+            if root.drow.show-bt: ToolbarSlot {
+                right-margin: 4px;
+                selected: root.selected == root.idx-bt;
+                show-ring: root.ring;
+                IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    tooltip: root.drow.bt-tooltip;
+                    opacity: root.drow.bt-dimmed ? 0.4 : 1.0;
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.bt-clicked(root.dev, mods.control, mods.alt, mods.shift);
+                    }
+                    Text {
+                        text: root.drow.bt-glyph;
+                        font-family: Theme.icon-font;
+                        font-size: 15px;
+                        color: Theme.icon-foreground;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    if root.drow.bt-pending: CountdownPie {
+                        x: (parent.width - 22px) / 2;
+                        y: (parent.height - 22px) / 2;
+                        width: 22px;
+                        height: 22px;
+                        opacity: 0.3;
+                        step: root.drow.bt-pie-step;
+                    }
+                }
+            }
+            if root.drow.show-lock: ToolbarSlot {
+                selected: root.selected == root.idx-lock;
+                show-ring: root.ring;
+                IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    tooltip: root.drow.lock-tooltip;
+                    opacity: root.drow.lock-dimmed ? 0.4 : 1.0;
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.lock-clicked(root.dev);
+                    }
+                    Text {
+                        text: root.drow.lock-glyph;
+                        font-family: Theme.icon-font;
+                        font-size: 15px;
+                        color: Theme.icon-foreground;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.drow.show-eq: ToolbarSlot {
+                selected: root.selected == root.idx-eq;
+                show-ring: root.ring;
+                IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    tooltip: root.drow.eq-tooltip;
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.eq-clicked(root.dev, mods.control, mods.alt, mods.shift);
+                    }
+                    right-clicked => {
+                        FlyoutActions.eq-right-clicked(root.dev);
+                    }
+                    Text {
+                        text: CardGlyphs.equalizer;
+                        font-family: Theme.icon-font;
+                        font-size: 15px;
+                        color: Theme.icon-foreground;
+                        opacity: root.drow.eq-running ? 1.0 : 0.4;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    if root.drow.eq-badge: Text {
+                        x: parent.width + 2px - self.preferred-width;
+                        y: parent.height + 1px - self.preferred-height;
+                        text: CardGlyphs.signal-not-connected;
+                        font-family: Theme.icon-font;
+                        font-size: 11px;
+                        font-weight: 800;
+                        color: Theme.icon-foreground;
+                    }
+                }
+            }
+            if root.drow.show-listen: ToolbarSlot {
+                selected: root.selected == root.idx-listen;
+                show-ring: root.ring;
+                listen-button := IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    tooltip: "Click: toggle Listen to this device. Ctrl + click: enable with Default Playback target. Right-click: pick target device.";
+                    opacity: root.drow.listen-active ? 1.0 : 0.4;
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.listen-clicked(root.dev, mods.control, mods.alt, mods.shift);
+                    }
+                    right-clicked => {
+                        FlyoutActions.listen-right-clicked(root.dev, self.absolute-position.x, self.absolute-position.y, self.width, self.height);
+                    }
+                    Text {
+                        text: CardGlyphs.ear-listen;
+                        font-family: Theme.icon-font;
+                        font-size: 15px;
+                        color: Theme.icon-foreground;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            if root.drow.show-default: ToolbarSlot {
+                selected: root.selected == root.idx-default;
+                show-ring: root.ring;
+                default-button := IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    tooltip: "Click: set as default. Ctrl + click: enable / disable. Shift + click: set as default communications.";
+                    opacity: root.drow.default-dimmed ? 0.4 : 1.0;
+                    changed hovered => {
+                        FlyoutActions.default-hover(root.dev, self.hovered);
+                    }
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.default-clicked(root.dev, mods.control, mods.alt, mods.shift);
+                    }
+                    right-clicked => {
+                        FlyoutActions.default-right-clicked(root.dev);
+                    }
+                    GlyphText {
+                        width: parent.width;
+                        height: parent.height;
+                        glyph: root.drow.default-glyph;
+                        font-size: 18px;
+                    }
+                }
+            }
+            ToolbarSlot {
+                selected: root.selected == root.idx-chevron;
+                show-ring: root.ring;
+                IconButton {
+                    width: 28px;
+                    height: 28px;
+                    tab-stop: false;
+                    enabled: root.drow.has-groups;
+                    opacity: root.drow.has-groups ? 1.0 : 0.4;
+                    clicked(mods) => {
+                        FlyoutActions.any-press();
+                        FlyoutActions.chevron-clicked(root.dev);
+                    }
+                    GlyphText {
+                        width: parent.width;
+                        height: parent.height;
+                        glyph: {
+                            text: root.drow.drawer-expanded ? CardGlyphs.chevron-down-small : CardGlyphs.chevron-up-small,
+                            scale: 1,
+                            tx: 0px,
+                            ty: root.drow.drawer-expanded ? -1px : 1px,
+                            bold: false,
+                        };
+                        font-size: 15px;
+                    }
+                }
+            }
+        }
+    }
+
+    toolbar-focus := FocusScope {
+        in-out property <bool> keyboard-focused: false;
+        x: toolbar.x;
+        width: toolbar.width;
+        focus-on-click: false;
+        focus-gained(reason) => {
+            self.keyboard-focused = reason == FocusReason.tab-navigation;
+            root.selected = min(root.selected, root.idx-chevron);
+        }
+        focus-lost(reason) => {
+            self.keyboard-focused = false;
+        }
+        key-pressed(event) => {
+            if (event.text == Key.LeftArrow) {
+                root.selected = max(0, root.selected - 1);
+                self.keyboard-focused = true;
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                root.selected = min(root.idx-chevron, root.selected + 1);
+                self.keyboard-focused = true;
+                return accept;
+            }
+            if (event.text == Key.Return || event.text == " ") {
+                root.activate({ control: event.modifiers.control, alt: event.modifiers.alt, shift: event.modifiers.shift });
+                return accept;
+            }
+            reject
+        }
+    }
+}
+
+// Slider row: mute button (33x32, margin -8,-12,3,-12) | slider | percent.
+component SliderRow {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    min-height: 32px;
+    max-height: 32px;
+
+    HorizontalLayout {
+        spacing: 0px;
+        Rectangle {
+            width: 28px;
+            mute := IconButton {
+                x: -8px;
+                y: (parent.height - 32px) / 2;
+                width: 33px;
+                height: 32px;
+                tooltip: root.drow.mute-tooltip;
+                opacity: root.drow.dimmed ? 0.4 : 1.0;
+                clicked(mods) => {
+                    FlyoutActions.any-press();
+                    FlyoutActions.device-mute(root.dev);
+                }
+                GlyphText {
+                    x: 0px;
+                    y: 0px;
+                    width: 32px;
+                    height: 32px;
+                    glyph: mute.hovered ? root.drow.mute-preview-glyph : root.drow.mute-glyph;
+                    font-size: 26px;
+                    horizontal-alignment: (mute.hovered ? root.drow.mute-preview-centered : root.drow.mute-glyph-centered) ? TextHorizontalAlignment.center : TextHorizontalAlignment.right;
+                }
+            }
+        }
+        FlyoutSlider {
+            opacity: root.drow.dimmed ? 0.4 : 1.0;
+            value: root.drow.value;
+            peak-min: FlyoutState.meters[root.drow.meter].min;
+            peak-max: FlyoutState.meters[root.drow.meter].max;
+            thumb: FlyoutState.thumb;
+            wheel-step: FlyoutState.wheel-step;
+            meter-peak-color: FlyoutState.meter-peak-color;
+            meter-peak-stereo-color: FlyoutState.meter-peak-stereo-color;
+            edited(value) => {
+                FlyoutActions.device-slider-edited(root.dev, value);
+            }
+            drag-started => {
+                FlyoutActions.device-slider-drag(root.dev, true);
+            }
+            drag-completed => {
+                FlyoutActions.device-slider-drag(root.dev, false);
+            }
+        }
+        PercentHost {
+            opacity: root.drow.dimmed ? 0.4 : 1.0;
+            dev: root.dev;
+            app: -1;
+            text: root.drow.percent;
+        }
+    }
+}
+
+// Device band: slider row and title row (order per FlyoutDeviceTitlePosition), padded.
+component DeviceBand {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    property <bool> title-above: FlyoutState.title-above;
+    property <bool> apps-bottom: FlyoutState.apps-bottom;
+    property <length> bottom-radius: (root.drow.is-last && (!root.apps-bottom || !root.drow.drawer-visible)) ? Theme.corner-radius : 0px;
+    // Title row margins: above the slider -1,-4,0,8; below it -1,-7,0,2.
+    property <length> title-top: root.title-above ? -4px : -7px;
+    property <length> title-bottom: root.title-above ? 8px : 2px;
+
+    Rectangle {
+        background: Theme.footer-background;
+        border-bottom-left-radius: root.bottom-radius;
+        border-bottom-right-radius: root.bottom-radius;
+    }
+
+    VerticalLayout {
+        padding-left: root.apps-bottom ? 14px : 17px;
+        padding-right: 12px;
+        padding-top: 0px;
+        padding-bottom: (root.title-above || root.apps-bottom) ? 1px : 12px;
+        spacing: 0px;
+        if root.title-above: Rectangle {
+            min-height: 28px + root.title-top + root.title-bottom;
+            max-height: self.min-height;
+            TitleRow {
+                x: -1px;
+                y: root.title-top;
+                width: parent.width + 1px;
+                height: 28px;
+                drow: root.drow;
+                dev: root.dev;
+            }
+        }
+        SliderRow {
+            drow: root.drow;
+            dev: root.dev;
+        }
+        if !root.title-above: Rectangle {
+            min-height: 28px + root.title-top + root.title-bottom;
+            max-height: self.min-height;
+            TitleRow {
+                x: -1px;
+                y: root.title-top;
+                width: parent.width + 1px;
+                height: 28px;
+                drow: root.drow;
+                dev: root.dev;
+            }
+        }
+    }
+}
+
+export component DeviceCard {
+    in property <DeviceRow> drow;
+    in property <int> dev;
+    property <bool> apps-bottom: FlyoutState.apps-bottom;
+
+    // Card background (Margin -1,0; clipped by the list).
+    Rectangle {
+        x: -1px;
+        width: root.width + 2px;
+        height: root.height;
+        border-radius: Theme.corner-radius;
+        background: Theme.footer-background;
+    }
+
+    VerticalLayout {
+        padding-top: 8px;
+        spacing: 0px;
+        // Drawer above the device band, or below it.
+        if !root.apps-bottom && root.drow.drawer-visible: AppBand {
+            drow: root.drow;
+            dev: root.dev;
+        }
+        DeviceBand {
+            drow: root.drow;
+            dev: root.dev;
+        }
+        if root.apps-bottom && root.drow.drawer-visible: AppBand {
+            drow: root.drow;
+            dev: root.dev;
+        }
+    }
+
+    // Outline: SliderTrack at 40% alpha.
+    Rectangle {
+        x: -1px;
+        width: root.width + 2px;
+        height: root.height;
+        border-radius: Theme.corner-radius;
+        border-width: 1px;
+        border-color: Theme.slider-track.transparentize(0.6);
+    }
+}

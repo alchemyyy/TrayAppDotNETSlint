@@ -1,0 +1,17 @@
+[package]
+name = "vtadn_sessions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+vtadn_model.workspace = true
+tadn_common.workspace = true
+log.workspace = true
+windows.workspace = true
+windows-core.workspace = true
+
+[lints]
+workspace = true

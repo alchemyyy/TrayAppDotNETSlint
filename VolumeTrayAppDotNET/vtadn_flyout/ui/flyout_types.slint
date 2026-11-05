@@ -1,0 +1,203 @@
+// Data contract between the Rust flyout controller and the Slint flyout, plus the shared globals
+// (layout flags, meters, actions, tooltip service).
+
+import { SliderThumb, SliderThumbShape } from "@tadn/flyout_slider.slint";
+
+// A GlyphCatalog entry: code point plus its render transform (scale about the centre, translate).
+export struct GlyphData {
+    text: string,
+    scale: float,
+    tx: length,
+    ty: length,
+    bold: bool,
+}
+
+// Displayed meter peaks (fractions of the volume extent) for one slider.
+export struct MeterValue {
+    min: float,
+    max: float,
+}
+
+// One app group row (slider drawer) or icon cell (grid drawer).
+export struct AppRow {
+    icon: image,
+    has-icon: bool,
+    tooltip: string,
+    muted: bool,
+    dimmed: bool,
+    // Playback rows: the icon toggles mute and previews the mute overlay on hover.
+    playback: bool,
+    // Slider position 0..100 and its label.
+    value: float,
+    percent: string,
+    meter: int,
+    // Grid activity badge glyph, or "".
+    badge: string,
+    // Grid cell position inside the drawer.
+    x: length,
+    y: length,
+}
+
+// One device card.
+export struct DeviceRow {
+    name: string,
+    format-line: string,
+    capture: bool,
+    muted: bool,
+    // IsMuted || !IsActive: slider, percent and mute button at 0.4.
+    dimmed: bool,
+    mute-glyph: GlyphData,
+    mute-preview-glyph: GlyphData,
+    // Microphone glyphs centre in the 32px slot, speaker glyphs align right.
+    mute-glyph-centered: bool,
+    mute-preview-centered: bool,
+    mute-tooltip: string,
+    value: float,
+    percent: string,
+    meter: int,
+    show-bt: bool,
+    bt-glyph: string,
+    bt-dimmed: bool,
+    bt-tooltip: string,
+    bt-pending: bool,
+    // Countdown pie: remaining degrees (0..360).
+    bt-pie-step: int,
+    show-lock: bool,
+    lock-glyph: string,
+    lock-dimmed: bool,
+    lock-tooltip: string,
+    show-eq: bool,
+    eq-running: bool,
+    eq-badge: bool,
+    eq-tooltip: string,
+    show-listen: bool,
+    listen-active: bool,
+    show-default: bool,
+    default-glyph: GlyphData,
+    default-dimmed: bool,
+    drawer-expanded: bool,
+    has-groups: bool,
+    drawer-visible: bool,
+    grid: bool,
+    apps: [AppRow],
+    drawer-max-height: length,
+    grid-height: length,
+    is-last: bool,
+}
+
+// Values that are the same for every card of a generation.
+export global FlyoutState {
+    in-out property <bool> apps-bottom: false;
+    in-out property <bool> title-above: false;
+    in-out property <bool> header-at-bottom: false;
+    in-out property <SliderThumb> thumb: {
+        shape: SliderThumbShape.capsule,
+        glyph: "",
+        font-family: "Segoe Fluent Icons",
+        font-size: 18px,
+        width: 10px,
+        height: 22px,
+        x-scale: 1,
+    };
+    in-out property <float> wheel-step: 2;
+    in-out property <color> meter-peak-color: #FFFFFF;
+    in-out property <color> meter-peak-stereo-color: #FFFFFF80;
+    in-out property <[MeterValue]> meters;
+    in-out property <length> app-icon-image-size: 24.2px;
+    in-out property <length> app-icon-glyph-size: 22px;
+    // Device whose name editor is open (-1 none) and its text.
+    in-out property <int> rename-device: -1;
+    in-out property <string> rename-text;
+    // Percent editor: device index (-1 none) and app index (-1 = the device slider).
+    in-out property <int> percent-device: -1;
+    in-out property <int> percent-app: -1;
+    in-out property <string> percent-text;
+    // Generation counter: editors and focus requests ignore stale ones.
+    in-out property <int> generation: 0;
+}
+
+// Pointer and keyboard activations reported to Rust. `dev` indexes the device model, `app` the
+// device's app list. Modifier flags come from the pointer or key event.
+export global FlyoutActions {
+    callback device-mute(dev: int);
+    callback device-slider-edited(dev: int, value: float);
+    // Any pointer press on a control that does not take focus (commits an open rename editor).
+    callback any-press();
+    callback device-slider-drag(dev: int, started: bool);
+    callback app-mute(dev: int, app: int);
+    callback app-slider-edited(dev: int, app: int, value: float);
+    callback app-slider-drag(dev: int, app: int, started: bool);
+    // Percent label pressed: `double` for a left double-click; other buttons report presses so Rust
+    // can detect their double-clicks. Returns true when the editor opened.
+    callback percent-pressed(dev: int, app: int, button: int, double: bool) -> bool;
+    callback percent-activated(dev: int, app: int);
+    callback percent-commit(text: string);
+    callback percent-cancel();
+    callback name-double-clicked(dev: int);
+    callback name-right-clicked(dev: int, x: length, y: length, w: length, h: length);
+    callback rename-commit(text: string);
+    callback rename-cancel();
+    callback bt-clicked(dev: int, control: bool, alt: bool, shift: bool);
+    callback lock-clicked(dev: int);
+    callback eq-clicked(dev: int, control: bool, alt: bool, shift: bool);
+    callback eq-right-clicked(dev: int);
+    callback listen-clicked(dev: int, control: bool, alt: bool, shift: bool);
+    callback listen-right-clicked(dev: int, x: length, y: length, w: length, h: length);
+    callback default-clicked(dev: int, control: bool, alt: bool, shift: bool);
+    callback default-right-clicked(dev: int);
+    callback default-hover(dev: int, hovered: bool);
+    callback chevron-clicked(dev: int);
+}
+
+// In-window tooltip service (TrayAppDotNETToolTip): one tip at a time, shown after the delay,
+// placed above its target (centred, gap 4px), flipped below when it does not fit, slid inside the
+// window horizontally, hidden while a pointer button is pressed on the target.
+export global Tip {
+    in-out property <string> text;
+    in-out property <length> anchor-x;
+    in-out property <length> anchor-y;
+    in-out property <length> anchor-width;
+    in-out property <length> anchor-height;
+    in-out property <int> owner: 0;
+    in-out property <bool> pending: false;
+    in-out property <bool> shown: false;
+    in-out property <int> next-token: 1;
+
+    public function request(token: int, text: string, x: length, y: length, w: length, h: length) {
+        if (text == "") {
+            return;
+        }
+        self.owner = token;
+        self.text = text;
+        self.anchor-x = x;
+        self.anchor-y = y;
+        self.anchor-width = w;
+        self.anchor-height = h;
+        self.shown = false;
+        self.pending = true;
+    }
+
+    public function release(token: int) {
+        if (self.owner == token) {
+            self.owner = 0;
+            self.pending = false;
+            self.shown = false;
+        }
+    }
+
+    public function update-text(token: int, text: string) {
+        if (self.owner == token) {
+            self.text = text;
+            if (text == "") {
+                self.pending = false;
+                self.shown = false;
+            }
+        }
+    }
+
+    public function hide-all() {
+        self.owner = 0;
+        self.pending = false;
+        self.shown = false;
+    }
+}
