@@ -131,7 +131,9 @@ pub(crate) struct Inner {
     this: Weak<Inner>,
     settings: SettingsHandle,
     audio: AudioClient,
-    menu: Rc<ContextMenu>,
+    /// The open sample-rate or listen-target menu (C# `_menu`): a window per show, released once it
+    /// has closed so no hidden menu keeps a native window and GPU surface.
+    menu: RefCell<Option<Rc<ContextMenu>>>,
     foreground: Rc<TaskbarForegroundTracker>,
     host: Rc<dyn FlyoutHost>,
     window: RefCell<Option<ui::FlyoutWindow>>,
@@ -161,7 +163,7 @@ impl Inner {
                 this: this.clone(),
                 settings: deps.settings.clone(),
                 audio: deps.audio.clone(),
-                menu: deps.menu.clone(),
+                menu: RefCell::new(None),
                 foreground: deps.foreground.clone(),
                 host: deps.host.clone(),
                 window: RefCell::new(None),
@@ -371,6 +373,9 @@ impl Inner {
         }
         if let Some(dialog) = self.dialog.borrow().as_ref() {
             tadn_common::apply_palette!(dialog.global::<ui::Theme>(), palette);
+        }
+        if let Some(menu) = self.menu.borrow().as_ref() {
+            menu.apply_palette(palette);
         }
         self.update_countdown_timer();
     }
@@ -1915,6 +1920,18 @@ impl Inner {
         on_activate: impl FnOnce(i32) + 'static,
     ) {
         self.close_menu();
+        let menu = match ContextMenu::new() {
+            Ok(menu) => Rc::new(menu),
+            Err(error) => {
+                log::error!("VolumeFlyout: cannot create the menu window: {error}");
+                return;
+            }
+        };
+        if let Some(palette) = self.palette.borrow().as_ref() {
+            menu.apply_palette(palette);
+        }
+        // Replaces the previous, already closed menu.
+        *self.menu.borrow_mut() = Some(menu.clone());
         self.state.borrow_mut().interaction.menu_open = true;
         let options = MenuOptions {
             font_size: self.settings.get().common.context_menu_font_size,
@@ -1922,9 +1939,10 @@ impl Inner {
             ..MenuOptions::default()
         };
         let weak = self.this.clone();
-        self.menu.show(items, MenuPlacement::ForRect(anchor), options, on_activate, move |reason| {
+        menu.show(items, MenuPlacement::ForRect(anchor), options, on_activate, move |reason| {
             let Some(inner) = weak.upgrade() else { return };
             inner.state.borrow_mut().interaction.menu_open = false;
+            inner.schedule_menu_release();
             if reason == MenuCloseReason::Deactivated {
                 inner.child_closed_from_deactivation();
             } else if inner.is_visible()
@@ -1937,9 +1955,27 @@ impl Inner {
     }
 
     fn close_menu(&self) {
-        if self.state.borrow().interaction.menu_open {
-            self.menu.close();
+        if !self.state.borrow().interaction.menu_open {
+            return;
         }
+        // Closing runs the menu's `on_closed`, which must find the slot unborrowed.
+        let menu = self.menu.borrow().clone();
+        if let Some(menu) = menu {
+            menu.close();
+        }
+    }
+
+    /// `OnMenuClosed`: drops the closed menu once its callbacks have returned, unless a newer menu
+    /// is open by then.
+    fn schedule_menu_release(&self) {
+        let weak = self.this.clone();
+        Timer::single_shot(Duration::ZERO, move || {
+            let Some(inner) = weak.upgrade() else { return };
+            if !inner.state.borrow().interaction.menu_open {
+                let closed = inner.menu.borrow_mut().take();
+                drop(closed);
+            }
+        });
     }
 
     // ---------------------------------------------------------------- dialog

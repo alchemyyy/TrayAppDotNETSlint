@@ -557,4 +557,40 @@ mod tests {
         assert_eq!(key_command(SharedString::from(Key::Escape).as_str()), Some(KeyCommand::Dismiss));
         assert_eq!(key_command("a"), None);
     }
+
+    /// Off-screen Slint platform for this test thread (software renderer, no OS window).
+    struct HeadlessPlatform {
+        window: Rc<slint::platform::software_renderer::MinimalSoftwareWindow>,
+    }
+
+    impl slint::platform::Platform for HeadlessPlatform {
+        fn create_window_adapter(&self) -> Result<Rc<dyn slint::platform::WindowAdapter>, slint::PlatformError> {
+            Ok(self.window.clone())
+        }
+    }
+
+    /// Owners drop a closed menu (the flyout after every show, the tray menu's cold slot): nothing
+    /// inside may keep the menu window, and with it its native window and GPU surface, alive.
+    #[test]
+    fn a_dropped_menu_releases_its_window() {
+        use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
+
+        let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+        slint::platform::set_platform(Box::new(HeadlessPlatform { window })).expect("platform");
+        let menu = ContextMenu::new().expect("menu");
+        let closed = Rc::new(Cell::new(None));
+        let closed_reason = closed.clone();
+        menu.show(
+            vec![MenuItem::new(1, "One"), MenuItem::new(2, "Two")],
+            MenuPlacement::AtPoint { x: 100, y: 100 },
+            MenuOptions::default(),
+            |_| {},
+            move |reason| closed_reason.set(Some(reason)),
+        );
+        let component = menu.inner.window.as_weak();
+        menu.close();
+        assert_eq!(closed.get(), Some(MenuCloseReason::Dismissed));
+        drop(menu);
+        assert!(component.upgrade().is_none(), "the menu window outlived its ContextMenu");
+    }
 }

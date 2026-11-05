@@ -22,7 +22,6 @@ use std::rc::Rc;
 use std::sync::Arc;
 
 use tadn_common::theme::Palette;
-use tadn_menu::ContextMenu;
 use tadn_shell::foreground::TaskbarForegroundTracker;
 use tadn_shell::placement::Rect;
 use vtadn_model::bus::AudioClient;
@@ -53,8 +52,6 @@ pub trait FlyoutHost {
 pub struct FlyoutDeps {
     pub settings: SettingsHandle,
     pub audio: AudioClient,
-    /// Shared menu window for the sample-rate and listen-target menus.
-    pub menu: Rc<ContextMenu>,
     pub foreground: Rc<TaskbarForegroundTracker>,
     pub host: Rc<dyn FlyoutHost>,
 }

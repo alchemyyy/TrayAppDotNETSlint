@@ -85,8 +85,6 @@ pub struct App {
     audio_service: RefCell<Option<AudioService>>,
     audio: AudioClient,
     snapshot: RefCell<Arc<AudioSnapshot>>,
-    /// Shared by the flyout's format/listen menus.
-    menu: Rc<ContextMenu>,
     /// The tray menu's warm slot (`TrayAppDotNETWarmWindowSlot`): created on demand, dropped
     /// `WARM_WINDOW_IDLE_EVICTION_DELAY` after a dismiss while `KeepTrayContextMenuWarm` is off.
     tray_menu: RefCell<Option<Rc<ContextMenu>>>,
@@ -128,8 +126,6 @@ impl App {
             }
         });
 
-        let menu = Rc::new(ContextMenu::new().map_err(|e| format!("menu window: {e}"))?);
-        menu.apply_palette(&palette);
         let foreground = Rc::new(TaskbarForegroundTracker::install());
 
         let app = Rc::new(Self {
@@ -141,7 +137,6 @@ impl App {
             audio_service: RefCell::new(Some(audio_service)),
             audio: audio.clone(),
             snapshot: RefCell::new(audio.latest()),
-            menu: menu.clone(),
             tray_menu: RefCell::new(None),
             tray_menu_eviction: slint::Timer::default(),
             flyout: RefCell::new(None),
@@ -174,7 +169,6 @@ impl App {
         let flyout = Flyout::new(FlyoutDeps {
             settings: settings.clone(),
             audio,
-            menu,
             foreground,
             host: Rc::new(Bridge(Rc::downgrade(&app))),
         })
@@ -326,7 +320,6 @@ impl App {
         if *self.palette.borrow() == palette {
             return;
         }
-        self.menu.apply_palette(&palette);
         if let Some(menu) = self.tray_menu.borrow().as_ref() {
             menu.apply_palette(&palette);
         }
@@ -711,6 +704,20 @@ impl App {
         self.hold_open();
     }
 
+    /// `OnSettingsWindowClosed`: drops the closed window once its callbacks have returned, as C#
+    /// builds a new one per open (a kept window would hold its native window and GPU surface). A
+    /// minimized window stays.
+    fn release_closed_settings_window(self: &Rc<Self>) {
+        let weak = Rc::downgrade(self);
+        slint::Timer::single_shot(Duration::ZERO, move || {
+            let Some(app) = weak.upgrade() else { return };
+            if !app.settings_window_visible() {
+                let closed = app.settings_window.borrow_mut().take();
+                drop(closed);
+            }
+        });
+    }
+
     /// `SettingsFlyoutKeepOpenCoordinator.HoldOpen`.
     fn hold_open(&self) {
         if !self.settings_window_visible() {
@@ -802,7 +809,6 @@ impl App {
         if let Some(service) = self.hotkeys.borrow_mut().take() {
             service.unregister_all();
         }
-        self.menu.close();
         self.tray_menu_eviction.stop();
         if let Some(menu) = self.tray_menu.borrow_mut().take() {
             menu.close();
@@ -909,6 +915,7 @@ impl SettingsHost for Bridge {
     fn settings_closed(&self) {
         if let Some(app) = self.0.upgrade() {
             app.release_hold();
+            app.release_closed_settings_window();
         }
     }
 

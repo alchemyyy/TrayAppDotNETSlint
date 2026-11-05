@@ -520,10 +520,9 @@ impl crate::SettingsHost for TestHost {
     fn settings_closed(&self) {}
 }
 
-/// Every row takes its height in the page layout: a row without one stacks every card at the top
-/// of the page (the page then fits the window and cannot scroll).
-#[test]
-fn page_rows_take_layout_height() {
+/// A settings window on this test thread's off-screen Slint platform (software renderer, no OS
+/// window), shown at 960x670 on `page`.
+fn headless_settings_window(page: SettingsPage) -> crate::SettingsWindow {
     use slint::platform::software_renderer::{MinimalSoftwareWindow, RepaintBufferType};
 
     let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
@@ -534,8 +533,16 @@ fn page_rows_take_layout_height() {
         vtadn_model::device_settings::DeviceSettings::default(),
     );
     let settings_window = crate::SettingsWindow::new(handle, std::rc::Rc::new(TestHost)).expect("settings window");
-    settings_window.show(Some(SettingsPage::General));
+    settings_window.show(Some(page));
     window.set_size(slint::PhysicalSize::new(960, 670));
+    settings_window
+}
+
+/// Every row takes its height in the page layout: a row without one stacks every card at the top
+/// of the page (the page then fits the window and cannot scroll).
+#[test]
+fn page_rows_take_layout_height() {
+    let settings_window = headless_settings_window(SettingsPage::General);
 
     let rows = settings_window.inner.items.borrow().len();
     assert!(rows > 10, "General has more than ten rows");
@@ -543,4 +550,18 @@ fn page_rows_take_layout_height() {
     // The General page is taller than a 670px window: at least 40px per row on average.
     assert!(scroll_max > 0.0, "page content must exceed the window, got scroll max {scroll_max}");
     assert!(scroll_max + 670.0 > rows as f32 * 40.0, "rows too short: {scroll_max} for {rows} rows");
+}
+
+/// The app drops a closed settings window (C# builds a new one per open): nothing inside may keep
+/// the component, and with it the native window and its GPU surface, alive.
+#[test]
+fn a_dropped_settings_window_releases_its_component() {
+    use slint::ComponentHandle;
+
+    let settings_window = headless_settings_window(SettingsPage::Hotkeys);
+    settings_window.show(Some(SettingsPage::Theme));
+    let component = settings_window.inner.window.as_weak();
+    settings_window.hide();
+    drop(settings_window);
+    assert!(component.upgrade().is_none(), "the settings component outlived its window");
 }
